@@ -1,195 +1,221 @@
 import express from "express";
 import dotenv from "dotenv";
+import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
+import crypto from "crypto";
 
 dotenv.config();
 
 const app = express();
 app.use(express.json());
 
+const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const TELEGRAM_BOT_TOKEN = process.env.BOT_TOKEN;
-const PERMANENT_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
+// --- START COMMAND ---
+bot.start(async (ctx) => {
+  const startKeyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("📊 Subscription Status", "check_status")],
+    [Markup.button.callback("💳 View Plans", "view_plans")],
+  ]);
 
-// Helper to initialize Paystack transaction
-async function initializePayment(email, plan, currency, amount) {
-  try {
-    const response = await axios.post(
-      "https://api.paystack.co/transaction/initialize",
-      {
-        email,
-        amount: amount * 100,
-        currency,
-        metadata: { plan },
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-    return response.data.data.authorization_url;
-  } catch (err) {
-    console.error("Paystack init error:", err.response?.data || err.message);
-    throw new Error("Failed to initialize payment");
-  }
-}
+  await ctx.reply(
+    `👋 Hey there! Welcome to *Fabadel Premium* 🚀  
 
-// Webhook endpoint for Telegram
-app.post("/telegram", async (req, res) => {
-  try {
-    const update = req.body;
+Here you can:
+💼 Access exclusive job opportunities  
+📚 Learn high-value skills from top creators  
+💳 Upgrade anytime for full premium access  
 
-    // Handle callback_query
-    if (update.callback_query) {
-      const { data, message, from } = update.callback_query;
-      const chatId = from.id;
+Choose an option below to get started.`,
+    { parse_mode: "Markdown", ...startKeyboard }
+  );
+});
 
-      let plan, amount, currency;
+// --- VIEW PLANS ---
+bot.action("view_plans", async (ctx) => {
+  const plansKeyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("🇰🇪 KES Plans", "kes_plans")],
+    [Markup.button.callback("💵 USD Plans", "usd_plans")],
+  ]);
+  await ctx.editMessageText("💳 Choose your currency:", plansKeyboard);
+});
 
-      if (data === "kes_1m") {
-        plan = "kes_1m";
-        amount = 299;
-        currency = "KES";
-      } else if (data === "usd_1m") {
-        plan = "usd_1m";
-        amount = 2.3;
-        currency = "USD";
-      } else if (data === "usd_12m") {
-        plan = "usd_12m";
-        amount = 23;
-        currency = "USD";
-      } else {
-        return res.sendStatus(200);
-      }
+// --- KES PLANS ---
+bot.action("kes_plans", async (ctx) => {
+  const kesKeyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("1 Month - KES 299", "kes_1m")],
+    [Markup.button.callback("1 Year - KES 2999", "kes_12m")],
+  ]);
+  await ctx.editMessageText("🇰🇪 *KES Subscription Plans:*", {
+    parse_mode: "Markdown",
+    ...kesKeyboard,
+  });
+});
 
-      // Ask user for email
-      await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+// --- USD PLANS ---
+bot.action("usd_plans", async (ctx) => {
+  const usdKeyboard = Markup.inlineKeyboard([
+    [Markup.button.callback("1 Month - $2.3", "usd_1m")],
+    [Markup.button.callback("1 Year - $23", "usd_12m")],
+  ]);
+  await ctx.editMessageText("💵 *USD Subscription Plans:*", {
+    parse_mode: "Markdown",
+    ...usdKeyboard,
+  });
+});
+
+// --- ASK FOR EMAIL AND INITIATE PAYMENT ---
+bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
+  const plan = ctx.match[0];
+  const userId = ctx.from.id;
+
+  await ctx.reply("📧 Please enter your email address for payment:");
+
+  // Wait for one message from this user only
+  bot.once("text", async (msgCtx) => {
+    if (msgCtx.from.id !== userId) return; // ignore other users
+    const email = msgCtx.message.text;
+
+    // Set amount and currency
+    const amount =
+      plan === "kes_1m"
+        ? 29900
+        : plan === "kes_12m"
+        ? 299900
+        : plan === "usd_1m"
+        ? 230
+        : 2300;
+    const currency = plan.startsWith("kes") ? "KES" : "USD";
+
+    try {
+      const res = await axios.post(
+        "https://api.paystack.co/transaction/initialize",
         {
-          chat_id: chatId,
-          text: `Please reply with your email to pay for ${plan} (${currency} ${amount})`,
-        }
-      );
-
-      // Save plan temporarily in memory (or replace with a DB session)
-      app.locals[chatId] = { plan, amount, currency };
-      return res.sendStatus(200);
-    }
-
-    // Handle user text (email)
-    if (update.message && update.message.text) {
-      const chatId = update.message.from.id;
-      const email = update.message.text.trim();
-      const session = app.locals[chatId];
-
-      if (!session) return res.sendStatus(200); // No pending plan
-
-      try {
-        // Initialize Paystack payment
-        const payUrl = await initializePayment(
           email,
-          session.plan,
-          session.currency,
-          session.amount
-        );
-
-        // Send payment link
-        await axios.post(
-          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-          {
-            chat_id: chatId,
-            text: `Click this link to complete payment: ${payUrl}`,
-          }
-        );
-
-        // Upsert subscription in Supabase (safe)
-        await supabase.from("subscriptions").upsert(
-          {
-            user_id: chatId.toString(),
-            plan: session.plan,
-            status: "pending",
-            payment_ref: "pending",
-            currency: session.currency,
-            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-          },
-          { onConflict: ["user_id", "plan"] }
-        );
-
-        // Clear session
-        delete app.locals[chatId];
-      } catch (err) {
-        console.error("Payment handling error:", err.message);
-        await axios.post(
-          `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
-          {
-            chat_id: chatId,
-            text: "Failed to process payment. Please try again later.",
-          }
-        );
-      }
-    }
-
-    res.sendStatus(200);
-  } catch (err) {
-    console.error("Telegram webhook error:", err.message);
-    res.sendStatus(500);
-  }
-});
-
-// Paystack webhook endpoint
-app.post("/paystack-webhook", async (req, res) => {
-  try {
-    const event = req.body;
-
-    if (event.event === "charge.success") {
-      const metadata = event.data.metadata || {};
-      const plan = metadata.plan || "unknown";
-      const chatId = event.data.customer?.email || null;
-
-      if (!chatId) return res.sendStatus(200);
-
-      // Update Supabase subscription
-      await supabase.from("subscriptions").upsert(
-        {
-          user_id: chatId.toString(),
-          plan,
-          status: "active",
-          payment_ref: event.data.reference,
-          amount: event.data.amount / 100,
-          currency: event.data.currency,
-          expires_at: new Date(
-            Date.now() + (plan.includes("12m") ? 365 : 30) * 24 * 60 * 60 * 1000
-          ),
+          amount,
+          currency,
+          metadata: { user_id: userId, plan },
+          callback_url: `${process.env.SERVER_URL}/paystack/callback`,
         },
-        { onConflict: ["user_id", "plan"] }
-      );
-
-      // Send permanent invite link
-      await axios.post(
-        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
         {
-          chat_id: chatId,
-          text: `Payment successful! You can join the group here: ${PERMANENT_INVITE_LINK}`,
+          headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
         }
       );
+
+      const payUrl = res.data.data.authorization_url;
+      await msgCtx.reply(`💳 Complete your payment here:\n${payUrl}`);
+    } catch (err) {
+      console.error("Paystack init error:", err);
+      await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
+    }
+  });
+});
+
+// --- CHECK STATUS ---
+bot.action("check_status", async (ctx) => {
+  const userId = ctx.from.id;
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("status, expires_at")
+    .eq("user_id", userId)
+    .single();
+
+  if (error || !data) {
+    await ctx.reply("❌ You do not have an active subscription.");
+  } else {
+    await ctx.reply(
+      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.expires_at}`,
+      { parse_mode: "Markdown" }
+    );
+  }
+});
+
+// --- PAYSTACK WEBHOOK ---
+app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) => {
+  try {
+    const secret = process.env.PAYSTACK_SECRET_KEY;
+    const hash = crypto
+      .createHmac("sha512", secret)
+      .update(JSON.stringify(req.body))
+      .digest("hex");
+
+    if (hash !== req.headers["x-paystack-signature"]) return res.sendStatus(400);
+
+    const event = req.body;
+    if (event.event === "charge.success") {
+      const { reference, metadata, amount, currency } = event.data;
+      const userId = metadata.user_id;
+      const plan = metadata.plan;
+      const days = plan.endsWith("1m") ? 30 : 365;
+
+      await supabase.from("subscriptions").upsert({
+        user_id: userId,
+        plan,
+        status: "active",
+        payment_ref: reference,
+        amount,
+        currency,
+        expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+      });
+
+      // Send personalized invite + congratulations
+      await bot.telegram.sendMessage(
+        userId,
+        `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀\nYou now have full access to premium resources, exclusive jobs, and professional tools to level up your career.\n\n👉 Type /start anytime to access your options.`,
+        { parse_mode: "Markdown" }
+      );
     }
 
     res.sendStatus(200);
-  } catch (err) {
-    console.error("Paystack webhook error:", err.message);
+  } catch (error) {
+    console.error("Webhook error:", error);
     res.sendStatus(500);
   }
 });
 
-// Health check
-app.get("/", (req, res) => res.send("Bot is running"));
+// --- PAYSTACK CALLBACK URL ---
+app.get("/paystack/callback", async (req, res) => {
+  const { reference } = req.query;
+  try {
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    });
 
+    if (response.data.status && response.data.data.status === "success") {
+      const { metadata, plan } = response.data.data;
+      const userId = metadata.user_id;
+      const days = plan.endsWith("1m") ? 30 : 365;
+
+      await supabase.from("subscriptions").upsert({
+        user_id: userId,
+        plan,
+        status: "active",
+        payment_ref: reference,
+        expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+      });
+
+      await bot.telegram.sendMessage(
+        userId,
+        "🎉 Payment verified via callback! Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀",
+        { parse_mode: "Markdown" }
+      );
+
+      return res.status(200).send("✅ Payment verified. You can close this window.");
+    }
+
+    res.status(400).send("❌ Payment not successful.");
+  } catch (error) {
+    console.error("Callback verification error:", error);
+    res.status(500).send("⚠️ Internal error verifying payment.");
+  }
+});
+
+// --- START SERVER ---
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));
+bot.launch();
