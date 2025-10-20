@@ -3,6 +3,7 @@ import dotenv from "dotenv"
 import { Telegraf, Markup } from "telegraf"
 import { createClient } from "@supabase/supabase-js"
 import axios from "axios"
+import crypto from "crypto"
 
 dotenv.config()
 
@@ -10,28 +11,28 @@ const app = express()
 app.use(express.json())
 
 const bot = new Telegraf(process.env.BOT_TOKEN)
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+)
 
 // --- START COMMAND ---
 bot.start(async (ctx) => {
   const startKeyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("🎓 Start Learning", "start_learning")],
     [Markup.button.callback("📊 Subscription Status", "check_status")],
     [Markup.button.callback("💳 View Plans", "view_plans")],
   ])
 
   await ctx.reply(
-    `👋 Welcome to *KaziNest Academy*!  
-Here you can access exclusive educational courses to sharpen your skills and grow your career.  
+    `👋 Hey there! Welcome to *Fabadel Premium* 🚀  
+
+Here you can:
+💼 Access exclusive job opportunities  
+📚 Learn high-value skills from top creators  
+💳 Upgrade anytime for full premium access  
+
 Choose an option below to get started.`,
     { parse_mode: "Markdown", ...startKeyboard }
-  )
-})
-
-// --- START LEARNING ---
-bot.action("start_learning", async (ctx) => {
-  await ctx.reply(
-    "🌍 Explore our range of professional development and job-ready courses directly on our platform!"
   )
 })
 
@@ -48,8 +49,6 @@ bot.action("view_plans", async (ctx) => {
 bot.action("kes_plans", async (ctx) => {
   const kesKeyboard = Markup.inlineKeyboard([
     [Markup.button.callback("1 Month - KES 299", "kes_1m")],
-    [Markup.button.callback("3 Months - KES 799", "kes_3m")],
-    [Markup.button.callback("6 Months - KES 1499", "kes_6m")],
     [Markup.button.callback("1 Year - KES 2999", "kes_12m")],
   ])
   await ctx.editMessageText("🇰🇪 *KES Subscription Plans:*", {
@@ -62,8 +61,6 @@ bot.action("kes_plans", async (ctx) => {
 bot.action("usd_plans", async (ctx) => {
   const usdKeyboard = Markup.inlineKeyboard([
     [Markup.button.callback("1 Month - $2.3", "usd_1m")],
-    [Markup.button.callback("3 Months - $6", "usd_3m")],
-    [Markup.button.callback("6 Months - $12", "usd_6m")],
     [Markup.button.callback("1 Year - $23", "usd_12m")],
   ])
   await ctx.editMessageText("💵 *USD Subscription Plans:*", {
@@ -72,57 +69,61 @@ bot.action("usd_plans", async (ctx) => {
   })
 })
 
-// --- ASK FOR EMAIL WHEN PLAN SELECTED ---
-bot.action(/(kes|usd)_(1m|3m|6m|12m)/, async (ctx) => {
+// --- ASK FOR EMAIL AND INITIATE PAYMENT ---
+bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
   const plan = ctx.match[0]
   ctx.session = { plan }
-  await ctx.reply("📧 Please enter your email address for Paystack payment:")
+
+  await ctx.reply("📧 Please enter your email address for payment:")
+
   bot.on("text", async (msgCtx) => {
     const email = msgCtx.message.text
     const userId = msgCtx.from.id
     const { plan } = ctx.session
 
-    // Store user email in Supabase
-    await supabase
+    // Store email in Supabase
+    const { error: emailError } = await supabase
       .from("profiles")
-      .upsert({ user_id: userId, email: email }, { onConflict: ["user_id"] })
+      .upsert({ user_id: userId, email }, { onConflict: ["user_id"] })
 
-    // Initialize Paystack payment
+    if (emailError) {
+      console.error("Supabase email error:", emailError)
+      return msgCtx.reply("⚠️ Something went wrong while saving your email.")
+    }
+
+    // Set amount and currency
     const amount =
       plan === "kes_1m"
         ? 29900
-        : plan === "kes_3m"
-        ? 79900
-        : plan === "kes_6m"
-        ? 149900
         : plan === "kes_12m"
         ? 299900
         : plan === "usd_1m"
         ? 230
-        : plan === "usd_3m"
-        ? 600
-        : plan === "usd_6m"
-        ? 1200
         : 2300
-
     const currency = plan.startsWith("kes") ? "KES" : "USD"
 
-    const res = await axios.post(
-      "https://api.paystack.co/transaction/initialize",
-      {
-        email,
-        amount,
-        currency,
-        metadata: { user_id: userId, plan },
-        callback_url: `${process.env.SERVER_URL}/paystack/webhook`,
-      },
-      {
-        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
-      }
-    )
+    // Initialize Paystack payment
+    try {
+      const res = await axios.post(
+        "https://api.paystack.co/transaction/initialize",
+        {
+          email,
+          amount,
+          currency,
+          metadata: { user_id: userId, plan },
+          callback_url: `${process.env.SERVER_URL}/paystack/callback`,
+        },
+        {
+          headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+        }
+      )
 
-    const payUrl = res.data.data.authorization_url
-    await msgCtx.reply(`💳 Complete your payment here: ${payUrl}`)
+      const payUrl = res.data.data.authorization_url
+      await msgCtx.reply(`💳 Complete your payment here:\n${payUrl}`)
+    } catch (err) {
+      console.error("Paystack init error:", err)
+      await msgCtx.reply("❌ Failed to initialize payment. Please try again.")
+    }
   })
 })
 
@@ -146,30 +147,82 @@ bot.action("check_status", async (ctx) => {
 })
 
 // --- PAYSTACK WEBHOOK ---
-app.post("/paystack/webhook", async (req, res) => {
+app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) => {
   try {
+    const secret = process.env.PAYSTACK_SECRET_KEY
+    const hash = crypto
+      .createHmac("sha512", secret)
+      .update(JSON.stringify(req.body))
+      .digest("hex")
+
+    if (hash !== req.headers["x-paystack-signature"]) return res.sendStatus(400)
+
     const event = req.body
     if (event.event === "charge.success") {
-      const { reference, customer, metadata } = event.data
+      const { reference, metadata, amount, currency } = event.data
       const userId = metadata.user_id
+      const plan = metadata.plan
+      const days = plan.endsWith("1m") ? 30 : 365
 
       await supabase.from("subscriptions").upsert({
         user_id: userId,
-        plan: metadata.plan,
+        plan,
         status: "active",
         payment_ref: reference,
-        expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // default 30 days
+        amount,
+        currency,
+        expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
       })
 
+      // Send personalized invite + congratulations
       await bot.telegram.sendMessage(
         userId,
-        "🎉 Payment received! Your subscription is now active."
+        `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀\nYou now have full access to premium resources, exclusive jobs, and professional tools to level up your career.\n\n👉 Type /start anytime to access your options.`,
+        { parse_mode: "Markdown" }
       )
     }
+
     res.sendStatus(200)
   } catch (error) {
     console.error("Webhook error:", error)
     res.sendStatus(500)
+  }
+})
+
+// --- PAYSTACK CALLBACK URL ---
+app.get("/paystack/callback", async (req, res) => {
+  const { reference } = req.query
+  try {
+    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
+      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+    })
+
+    if (response.data.status && response.data.data.status === "success") {
+      const { metadata, plan } = response.data.data
+      const userId = metadata.user_id
+      const days = plan.endsWith("1m") ? 30 : 365
+
+      await supabase.from("subscriptions").upsert({
+        user_id: userId,
+        plan,
+        status: "active",
+        payment_ref: reference,
+        expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
+      })
+
+      await bot.telegram.sendMessage(
+        userId,
+        "🎉 Payment verified via callback! Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀",
+        { parse_mode: "Markdown" }
+      )
+
+      return res.status(200).send("✅ Payment verified. You can close this window.")
+    }
+
+    res.status(400).send("❌ Payment not successful.")
+  } catch (error) {
+    console.error("Callback verification error:", error)
+    res.status(500).send("⚠️ Internal error verifying payment.")
   }
 })
 
