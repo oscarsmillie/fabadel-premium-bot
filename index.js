@@ -1,6 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
-import { Telegraf, Markup, session } from "telegraf";
+import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 import crypto from "crypto";
@@ -11,12 +11,13 @@ const app = express();
 app.use(express.json());
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-bot.use(session()); // Enable session middleware
-
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
+// --- In-memory per-user plan storage ---
+const userPlans = new Map();
 
 // --- START COMMAND ---
 bot.start(async (ctx) => {
@@ -71,22 +72,22 @@ bot.action("usd_plans", async (ctx) => {
   });
 });
 
-// --- PLAN SELECTION AND EMAIL PROMPT ---
+// --- PLAN SELECTION ---
 bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
+  const userId = ctx.from.id;
   const plan = ctx.match[0];
-  ctx.session.plan = plan;
+  userPlans.set(userId, plan); // store selected plan
   await ctx.reply("📧 Please enter your email address for payment:");
 });
 
 // --- HANDLE EMAIL INPUT ---
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
-  const plan = ctx.session.plan;
-
-  if (!plan) return; // Ignore if no plan selected
+  const plan = userPlans.get(userId);
+  if (!plan) return; // ignore if no plan selected
 
   const email = ctx.message.text;
-  ctx.session.plan = null; // Clear session
+  userPlans.delete(userId); // clear after use
 
   const amount =
     plan === "kes_1m"
