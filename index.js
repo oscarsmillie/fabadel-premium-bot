@@ -76,9 +76,10 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
 
   await ctx.reply("📧 Please enter your email address for payment:");
 
-  // Wait for one message from this user only
-  bot.once("text", async (msgCtx) => {
+  const handler = async (msgCtx) => {
     if (msgCtx.from.id !== userId) return; // ignore other users
+    bot.off("text", handler); // remove listener immediately
+
     const email = msgCtx.message.text;
 
     // Set amount and currency
@@ -92,6 +93,7 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
         : 2300;
     const currency = plan.startsWith("kes") ? "KES" : "USD";
 
+    // Initialize Paystack payment
     try {
       const res = await axios.post(
         "https://api.paystack.co/transaction/initialize",
@@ -113,7 +115,9 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
       console.error("Paystack init error:", err);
       await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
     }
-  });
+  };
+
+  bot.on("text", handler);
 });
 
 // --- CHECK STATUS ---
@@ -182,9 +186,12 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
 app.get("/paystack/callback", async (req, res) => {
   const { reference } = req.query;
   try {
-    const response = await axios.get(`https://api.paystack.co/transaction/verify/${reference}`, {
-      headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
-    });
+    const response = await axios.get(
+      `https://api.paystack.co/transaction/verify/${reference}`,
+      {
+        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+      }
+    );
 
     if (response.data.status && response.data.data.status === "success") {
       const { metadata, plan } = response.data.data;
