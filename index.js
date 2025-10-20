@@ -18,8 +18,81 @@ const supabase = createClient(
 
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup"; 
-// >>> CORRECTION 1: Set the correct Telegram invite link <<<
-const FALLBACK_INVITE = "https://t.me/+kSAlgNtLRXJiYWZi"; 
+
+// ======================================================
+// >>> NEW CODE: KICK-OFF FUNCTION (For External Scheduler) <<<
+// ======================================================
+
+/**
+ * Checks for expired users in the database and kicks them from the Telegram group.
+ * This function should be called by an external scheduler (e.g., cron job, Edge Function).
+ * * NOTE: The kicking action (bot.telegram.banChatMember) will only work if the bot 
+ * is an administrator in the PREMIUM_GROUP.
+ */
+async function kickExpiredUsers() {
+    console.log("Starting kickExpiredUsers job...");
+    
+    // 1. Get expired but still active users
+    const { data: expiredUsers, error } = await supabase
+        .from("subscriptions")
+        .select("telegram_id")
+        .eq("active", true)
+        .lt("end_at", new Date().toISOString()); // end_at is before now
+
+    if (error) {
+        console.error("Supabase query error for kick-off:", error);
+        return;
+    }
+    
+    if (!expiredUsers || expiredUsers.length === 0) {
+        console.log("No users found to kick.");
+        return;
+    }
+
+    console.log(`Found ${expiredUsers.length} users to kick.`);
+
+    const kickPromises = expiredUsers.map(async (user) => {
+        try {
+            // Telegram API to kick the user.
+            // NOTE: This actually "bans" them, which prevents rejoining until unbanned.
+            // If you want to only "unrestrict" (remove), the process is more complex.
+            await bot.telegram.banChatMember(PREMIUM_GROUP, user.telegram_id);
+            
+            // You might want to unban them immediately so they can rejoin later, 
+            // but the primary action is banChatMember to remove them.
+            // await bot.telegram.unbanChatMember(PREMIUM_GROUP, user.telegram_id);
+
+            console.log(`Successfully kicked user: ${user.telegram_id}`);
+            return user.telegram_id;
+        } catch (kickError) {
+            console.error(`Failed to kick user ${user.telegram_id}:`, kickError.message);
+            return null;
+        }
+    });
+
+    // Wait for all kick promises to resolve
+    const kickedIds = (await Promise.all(kickPromises)).filter(id => id !== null);
+
+    // 2. You will handle the Supabase SQL update externally to mark them as active=false.
+    // For now, we'll log the IDs you need to update:
+    if (kickedIds.length > 0) {
+         console.log(`Kicked IDs: [${kickedIds.join(', ')}]. Now run your SQL update to set active=false.`);
+    }
+
+    console.log("Kick-off job finished.");
+}
+
+// Example of how you might expose this as an API endpoint for an external cron service
+app.get("/api/kick-expired", async (req, res) => {
+    // Add secret key check here if exposing publicly
+    await kickExpiredUsers();
+    res.status(200).send("Kick-off process initiated.");
+});
+
+// ======================================================
+// >>> END NEW CODE <<<
+// ======================================================
+
 
 // --- START COMMAND ---
 bot.start(async (ctx) => {
@@ -126,17 +199,20 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
 // --- CHECK STATUS ---
 bot.action("check_status", async (ctx) => {
   const userId = ctx.from.id;
+  
+ // >>> CORRECTION: Fix the column names used for select and where condition <<<
   const { data, error } = await supabase
     .from("subscriptions")
-    .select("status, expires_at")
-    .eq("telegram_id", userId) // Check against telegram_id column
+    .select("status, end_at") // Select the correct expiration column
+    .eq("telegram_id", userId) // Query against the correct unique column
     .single();
+// >>> END CORRECTION <<<
 
   if (error || !data) {
     await ctx.reply("❌ You do not have an active subscription.");
   } else {
     await ctx.reply(
-      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.expires_at}`,
+      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`, // Use the correct expiration column
       { parse_mode: "Markdown" }
     );
   }
@@ -157,7 +233,7 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
     if (event.event === "charge.success") {
       const metadata = event.data.metadata || {};
       const plan = metadata.plan || "unknown";
-      const telegramIdValue = metadata.user_id; // Using a clearer variable name
+      const telegramIdValue = metadata.user_id; 
       const amount = event.data.amount || 0;
       const currency = event.data.currency || "USD";
 
@@ -165,43 +241,30 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
 
       const days = plan.endsWith("1m") ? 30 : plan.endsWith("12m") ? 365 : 30;
       
-      // Calculate expiration date
       const expirationDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
-      // >>> CORRECTION 2 (Part A): Fix the upsert issue for the webhook <<<
       await supabase.from("subscriptions").upsert({
-        // telegram_id is NOT NULL and was missing
         telegram_id: telegramIdValue, 
-        
-        // end_at is NOT NULL and was missing, but its value was mapped to expires_at
         end_at: expirationDate, 
-        
-        // Remaining data
         plan,
         status: "active",
         payment_ref: event.data.reference,
         amount,
         currency,
-        
-        // Set the conflict target to telegram_id (the unique identifier for a user)
       }, { onConflict: 'telegram_id' });
 
-      // Send invite link + congratulations
       try {
         const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
         await bot.telegram.sendMessage(
-          telegramIdValue, // Use the correct user ID
+          telegramIdValue, 
           `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\n` +
             `Welcome aboard! 🚀 You now have full access to premium resources and jobs.\n\n` +
             `👉 Join our premium group here: ${inviteLink}`,
           { parse_mode: "Markdown" }
         );
-      } catch {
-        await bot.telegram.sendMessage(
-          telegramIdValue, // Use the correct user ID
-          `🎉 Subscription active! Could not generate invite link automatically. Use this link instead: ${FALLBACK_INVITE}`,
-          { parse_mode: "Markdown" }
-        );
+      } catch (error) {
+           // Log the error for debugging why the link failed (e.g., bot permissions)
+           console.error("Invite Link Error (Webhook):", error);
       }
     }
 
@@ -226,7 +289,7 @@ app.get("/paystack/callback", async (req, res) => {
     if (response.data.status && response.data.data.status === "success") {
       const metadata = response.data.data.metadata || {};
       const plan = metadata.plan || "unknown";
-      const telegramIdValue = metadata.user_id; // Using a clearer variable name
+      const telegramIdValue = metadata.user_id; 
       const amount = response.data.data.amount || 0;
       const currency = response.data.data.currency || "USD";
 
@@ -234,41 +297,29 @@ app.get("/paystack/callback", async (req, res) => {
 
       const days = plan.endsWith("1m") ? 30 : plan.endsWith("12m") ? 365 : 30;
 
-      // Calculate expiration date
       const expirationDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
-      // >>> CORRECTION 2 (Part B): Fix the upsert issue for the callback <<<
       await supabase.from("subscriptions").upsert({
-        // telegram_id is NOT NULL and was missing
         telegram_id: telegramIdValue, 
-        
-        // end_at is NOT NULL and was missing, but its value was mapped to expires_at
         end_at: expirationDate, 
-        
-        // Remaining data
         plan,
         status: "active",
-        payment_ref: reference, // Use reference from query, not event.data.reference
+        payment_ref: reference, 
         amount,
         currency,
-        
-        // Set the conflict target to telegram_id (the unique identifier for a user)
       }, { onConflict: 'telegram_id' });
 
       try {
         const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
         await bot.telegram.sendMessage(
-          telegramIdValue, // Use the correct user ID
+          telegramIdValue, 
           `🎉 Payment verified! Your Fabadel Premium subscription is now active.\n\n` +
             `👉 Join our premium group here: ${inviteLink}`,
           { parse_mode: "Markdown" }
         );
-      } catch {
-        await bot.telegram.sendMessage(
-          telegramIdValue, // Use the correct user ID
-          `🎉 Payment verified! Could not generate invite link automatically. Use this link: ${FALLBACK_INVITE}`,
-          { parse_mode: "Markdown" }
-        );
+      } catch (error) {
+           // Log the error for debugging why the link failed (e.g., bot permissions)
+           console.error("Invite Link Error (Callback):", error);
       }
 
       return res.status(200).send("✅ Payment verified. You can close this window.");
