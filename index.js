@@ -18,16 +18,17 @@ const supabase = createClient(
 
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup"; 
+// The static invite link to be used for all successful payments
+const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi"; 
+
 
 // ======================================================
-// >>> NEW CODE: KICK-OFF FUNCTION (For External Scheduler) <<<
+// KICK-OFF FUNCTION (For External Scheduler)
 // ======================================================
 
 /**
  * Checks for expired users in the database and kicks them from the Telegram group.
  * This function should be called by an external scheduler (e.g., cron job, Edge Function).
- * * NOTE: The kicking action (bot.telegram.banChatMember) will only work if the bot 
- * is an administrator in the PREMIUM_GROUP.
  */
 async function kickExpiredUsers() {
     console.log("Starting kickExpiredUsers job...");
@@ -37,7 +38,7 @@ async function kickExpiredUsers() {
         .from("subscriptions")
         .select("telegram_id")
         .eq("active", true)
-        .lt("end_at", new Date().toISOString()); // end_at is before now
+        .lt("end_at", new Date().toISOString()); 
 
     if (error) {
         console.error("Supabase query error for kick-off:", error);
@@ -54,14 +55,8 @@ async function kickExpiredUsers() {
     const kickPromises = expiredUsers.map(async (user) => {
         try {
             // Telegram API to kick the user.
-            // NOTE: This actually "bans" them, which prevents rejoining until unbanned.
-            // If you want to only "unrestrict" (remove), the process is more complex.
             await bot.telegram.banChatMember(PREMIUM_GROUP, user.telegram_id);
             
-            // You might want to unban them immediately so they can rejoin later, 
-            // but the primary action is banChatMember to remove them.
-            // await bot.telegram.unbanChatMember(PREMIUM_GROUP, user.telegram_id);
-
             console.log(`Successfully kicked user: ${user.telegram_id}`);
             return user.telegram_id;
         } catch (kickError) {
@@ -70,11 +65,8 @@ async function kickExpiredUsers() {
         }
     });
 
-    // Wait for all kick promises to resolve
     const kickedIds = (await Promise.all(kickPromises)).filter(id => id !== null);
 
-    // 2. You will handle the Supabase SQL update externally to mark them as active=false.
-    // For now, we'll log the IDs you need to update:
     if (kickedIds.length > 0) {
          console.log(`Kicked IDs: [${kickedIds.join(', ')}]. Now run your SQL update to set active=false.`);
     }
@@ -84,13 +76,12 @@ async function kickExpiredUsers() {
 
 // Example of how you might expose this as an API endpoint for an external cron service
 app.get("/api/kick-expired", async (req, res) => {
-    // Add secret key check here if exposing publicly
     await kickExpiredUsers();
     res.status(200).send("Kick-off process initiated.");
 });
 
 // ======================================================
-// >>> END NEW CODE <<<
+// END KICK-OFF FUNCTION
 // ======================================================
 
 
@@ -200,19 +191,17 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
 bot.action("check_status", async (ctx) => {
   const userId = ctx.from.id;
   
- // >>> CORRECTION: Fix the column names used for select and where condition <<<
   const { data, error } = await supabase
     .from("subscriptions")
-    .select("status, end_at") // Select the correct expiration column
-    .eq("telegram_id", userId) // Query against the correct unique column
+    .select("status, end_at") 
+    .eq("telegram_id", userId) 
     .single();
-// >>> END CORRECTION <<<
 
   if (error || !data) {
     await ctx.reply("❌ You do not have an active subscription.");
   } else {
     await ctx.reply(
-      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`, // Use the correct expiration column
+      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`, 
       { parse_mode: "Markdown" }
     );
   }
@@ -253,19 +242,15 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
         currency,
       }, { onConflict: 'telegram_id' });
 
-      try {
-        const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
-        await bot.telegram.sendMessage(
-          telegramIdValue, 
-          `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\n` +
-            `Welcome aboard! 🚀 You now have full access to premium resources and jobs.\n\n` +
-            `👉 Join our premium group here: ${inviteLink}`,
-          { parse_mode: "Markdown" }
-        );
-      } catch (error) {
-           // Log the error for debugging why the link failed (e.g., bot permissions)
-           console.error("Invite Link Error (Webhook):", error);
-      }
+      // --- MODIFICATION: Use STATIC_INVITE_LINK directly ---
+      await bot.telegram.sendMessage(
+        telegramIdValue, 
+        `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\n` +
+          `Welcome aboard! 🚀 You now have full access to premium resources and jobs.\n\n` +
+          `👉 Join our premium group here: ${STATIC_INVITE_LINK}`,
+        { parse_mode: "Markdown" }
+      );
+      // --- END MODIFICATION ---
     }
 
     res.sendStatus(200);
@@ -309,18 +294,14 @@ app.get("/paystack/callback", async (req, res) => {
         currency,
       }, { onConflict: 'telegram_id' });
 
-      try {
-        const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
-        await bot.telegram.sendMessage(
-          telegramIdValue, 
-          `🎉 Payment verified! Your Fabadel Premium subscription is now active.\n\n` +
-            `👉 Join our premium group here: ${inviteLink}`,
-          { parse_mode: "Markdown" }
-        );
-      } catch (error) {
-           // Log the error for debugging why the link failed (e.g., bot permissions)
-           console.error("Invite Link Error (Callback):", error);
-      }
+      // --- MODIFICATION: Use STATIC_INVITE_LINK directly ---
+      await bot.telegram.sendMessage(
+        telegramIdValue, 
+        `🎉 Payment verified! Your Fabadel Premium subscription is now active.\n\n` +
+          `👉 Join our premium group here: ${STATIC_INVITE_LINK}`,
+        { parse_mode: "Markdown" }
+      );
+      // --- END MODIFICATION ---
 
       return res.status(200).send("✅ Payment verified. You can close this window.");
     }
