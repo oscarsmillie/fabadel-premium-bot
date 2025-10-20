@@ -71,33 +71,34 @@ bot.action("usd_plans", async (ctx) => {
   });
 });
 
-// --- ASK FOR EMAIL & INITIATE PAYMENT ---
+// --- HANDLE PLAN SELECTION ---
 bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
   const plan = ctx.match[0];
-  ctx.session = ctx.session || {};
-  ctx.session.plan = plan;
+  const userId = ctx.from.id;
 
   await ctx.reply("📧 Please enter your email address for payment:");
 
-  // Use bot.once to avoid multiple listener issues
-  bot.once("text", async (msgCtx) => {
+  // Temporary handler for the user's email
+  const emailHandler = async (msgCtx) => {
+    if (msgCtx.from.id !== userId) return; // ignore other users
+    const email = msgCtx.message.text;
+
+    // Remove listener immediately
+    bot.off("text", emailHandler);
+
+    // Set amount & currency
+    const amount =
+      plan === "kes_1m"
+        ? 29900
+        : plan === "kes_12m"
+        ? 299900
+        : plan === "usd_1m"
+        ? 230
+        : 2300;
+    const currency = plan.startsWith("kes") ? "KES" : "USD";
+
     try {
-      const email = msgCtx.message.text;
-      const userId = msgCtx.from.id;
-      const { plan } = ctx.session;
-
-      // Set amount & currency
-      const amount =
-        plan === "kes_1m"
-          ? 29900
-          : plan === "kes_12m"
-          ? 299900
-          : plan === "usd_1m"
-          ? 230
-          : 2300;
-      const currency = plan.startsWith("kes") ? "KES" : "USD";
-
-      // Initialize Paystack payment
+      // Initialize Paystack transaction
       const res = await axios.post(
         "https://api.paystack.co/transaction/initialize",
         {
@@ -107,9 +108,7 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
           metadata: { user_id: userId, plan },
           callback_url: `${process.env.SERVER_URL}/paystack/callback`,
         },
-        {
-          headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
-        }
+        { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
       );
 
       const payUrl = res.data.data.authorization_url;
@@ -118,7 +117,9 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
       console.error("Paystack init error:", err.response?.data || err);
       await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
     }
-  });
+  };
+
+  bot.on("text", emailHandler);
 });
 
 // --- CHECK STATUS ---
@@ -152,13 +153,11 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
     if (hash !== req.headers["x-paystack-signature"]) return res.sendStatus(400);
 
     const event = req.body;
-
     if (event.event === "charge.success") {
       const metadata = event.data?.metadata || {};
       const userId = metadata.user_id;
-      const plan = metadata.plan || "unknown";
-
-      if (!userId) return res.sendStatus(400);
+      const plan = metadata.plan;
+      if (!userId || !plan) return res.sendStatus(400);
 
       const days = plan.endsWith("1m") ? 30 : 365;
 
@@ -172,12 +171,10 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
         expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
       });
 
-      // Send permanent invite link
+      // Send permanent invite + congratulations
       await bot.telegram.sendMessage(
         userId,
-        `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\n` +
-          `Welcome aboard! 🚀 You now have full access to premium resources and jobs.\n\n` +
-          `👉 Join our premium group here: ${INVITE_LINK}`,
+        `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀\nYou now have full access to premium resources, exclusive jobs, and professional tools to level up your career.\n\n👉 Join the group here: ${INVITE_LINK}`,
         { parse_mode: "Markdown" }
       );
     }
@@ -192,7 +189,6 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
 // --- PAYSTACK CALLBACK ---
 app.get("/paystack/callback", async (req, res) => {
   const { reference } = req.query;
-
   if (!reference) return res.status(400).send("❌ Missing reference.");
 
   try {
@@ -200,15 +196,14 @@ app.get("/paystack/callback", async (req, res) => {
       headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
     });
 
-    const data = response.data?.data;
-    if (!data || data.status !== "success") return res.status(400).send("❌ Payment not successful.");
-
-    const metadata = data.metadata || {};
+    const data = response.data.data;
+    const metadata = data?.metadata || {};
     const userId = metadata.user_id;
-    const plan = metadata.plan || "unknown";
-    const days = plan.endsWith("1m") ? 30 : 365;
+    const plan = metadata.plan;
 
-    if (!userId) return res.status(400).send("❌ Invalid metadata.");
+    if (!userId || !plan) return res.status(400).send("❌ Invalid metadata.");
+
+    const days = plan.endsWith("1m") ? 30 : 365;
 
     await supabase.from("subscriptions").upsert({
       user_id: userId,
@@ -222,8 +217,7 @@ app.get("/paystack/callback", async (req, res) => {
 
     await bot.telegram.sendMessage(
       userId,
-      `🎉 Payment verified via callback! Your Fabadel Premium subscription is now active.\n\n` +
-        `Welcome aboard! 🚀\nJoin the premium group: ${INVITE_LINK}`,
+      `🎉 Payment verified via callback! Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀\n👉 Join the group here: ${INVITE_LINK}`,
       { parse_mode: "Markdown" }
     );
 
