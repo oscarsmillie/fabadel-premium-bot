@@ -1,6 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
-import { Telegraf, Markup } from "telegraf";
+import { Telegraf, Markup, session } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 import crypto from "crypto";
@@ -11,6 +11,8 @@ const app = express();
 app.use(express.json());
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+bot.use(session()); // Enable session middleware
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -69,58 +71,58 @@ bot.action("usd_plans", async (ctx) => {
   });
 });
 
-// --- ASK FOR EMAIL AND INITIATE PAYMENT ---
+// --- PLAN SELECTION AND EMAIL PROMPT ---
 bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
   const plan = ctx.match[0];
-  const userId = ctx.from.id;
-
+  ctx.session.plan = plan;
   await ctx.reply("📧 Please enter your email address for payment:");
-
-  const handler = async (msgCtx) => {
-    if (msgCtx.from.id !== userId) return; // ignore other users
-    bot.off("text", handler); // remove listener immediately
-
-    const email = msgCtx.message.text;
-
-    // Set amount and currency
-    const amount =
-      plan === "kes_1m"
-        ? 29900
-        : plan === "kes_12m"
-        ? 299900
-        : plan === "usd_1m"
-        ? 230
-        : 2300;
-    const currency = plan.startsWith("kes") ? "KES" : "USD";
-
-    // Initialize Paystack payment
-    try {
-      const res = await axios.post(
-        "https://api.paystack.co/transaction/initialize",
-        {
-          email,
-          amount,
-          currency,
-          metadata: { user_id: userId, plan },
-          callback_url: `${process.env.SERVER_URL}/paystack/callback`,
-        },
-        {
-          headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
-        }
-      );
-
-      const payUrl = res.data.data.authorization_url;
-      await msgCtx.reply(`💳 Complete your payment here:\n${payUrl}`);
-    } catch (err) {
-      console.error("Paystack init error:", err);
-      await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
-    }
-  };
-
-  bot.on("text", handler);
 });
 
-// --- CHECK STATUS ---
+// --- HANDLE EMAIL INPUT ---
+bot.on("text", async (ctx) => {
+  const userId = ctx.from.id;
+  const plan = ctx.session.plan;
+
+  if (!plan) return; // Ignore if no plan selected
+
+  const email = ctx.message.text;
+  ctx.session.plan = null; // Clear session
+
+  const amount =
+    plan === "kes_1m"
+      ? 29900
+      : plan === "kes_12m"
+      ? 299900
+      : plan === "usd_1m"
+      ? 230
+      : 2300;
+
+  const currency = plan.startsWith("kes") ? "KES" : "USD";
+
+  try {
+    const res = await axios.post(
+      "https://api.paystack.co/transaction/initialize",
+      {
+        email,
+        amount,
+        currency,
+        metadata: { user_id: userId, plan },
+        callback_url: `${process.env.SERVER_URL}/paystack/callback`,
+      },
+      {
+        headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` },
+      }
+    );
+
+    const payUrl = res.data.data.authorization_url;
+    await ctx.reply(`💳 Complete your payment here:\n${payUrl}`);
+  } catch (err) {
+    console.error("Paystack init error:", err);
+    await ctx.reply("❌ Failed to initialize payment. Please try again.");
+  }
+});
+
+// --- CHECK SUBSCRIPTION STATUS ---
 bot.action("check_status", async (ctx) => {
   const userId = ctx.from.id;
   const { data, error } = await supabase
@@ -167,7 +169,6 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
         expires_at: new Date(Date.now() + days * 24 * 60 * 60 * 1000),
       });
 
-      // Send personalized invite + congratulations
       await bot.telegram.sendMessage(
         userId,
         `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\nWelcome aboard! 🚀\nYou now have full access to premium resources, exclusive jobs, and professional tools to level up your career.\n\n👉 Type /start anytime to access your options.`,
@@ -182,7 +183,7 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
   }
 });
 
-// --- PAYSTACK CALLBACK URL ---
+// --- PAYSTACK CALLBACK ---
 app.get("/paystack/callback", async (req, res) => {
   const { reference } = req.query;
   try {
