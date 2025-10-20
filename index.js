@@ -18,7 +18,8 @@ const supabase = createClient(
 
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup"; 
-// REMOVED: const FALLBACK_INVITE = "https://t.me/+kSAlgNtLRXJiYWZi"; 
+// >>> CORRECTION 1: Set the correct Telegram invite link <<<
+const FALLBACK_INVITE = "https://t.me/+kSAlgNtLRXJiYWZi"; 
 
 // --- START COMMAND ---
 bot.start(async (ctx) => {
@@ -127,15 +128,15 @@ bot.action("check_status", async (ctx) => {
   const userId = ctx.from.id;
   const { data, error } = await supabase
     .from("subscriptions")
-    .select("status, end_at") // Changed expires_at to end_at based on schema analysis
-    .eq("telegram_id", userId) 
+    .select("status, expires_at")
+    .eq("telegram_id", userId) // Check against telegram_id column
     .single();
 
   if (error || !data) {
     await ctx.reply("❌ You do not have an active subscription.");
   } else {
     await ctx.reply(
-      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`, // Changed expires_at to end_at
+      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.expires_at}`,
       { parse_mode: "Markdown" }
     );
   }
@@ -156,7 +157,7 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
     if (event.event === "charge.success") {
       const metadata = event.data.metadata || {};
       const plan = metadata.plan || "unknown";
-      const telegramIdValue = metadata.user_id; 
+      const telegramIdValue = metadata.user_id; // Using a clearer variable name
       const amount = event.data.amount || 0;
       const currency = event.data.currency || "USD";
 
@@ -167,27 +168,41 @@ app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) =>
       // Calculate expiration date
       const expirationDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
-      // Supabase Upsert (Already Fixed)
+      // >>> CORRECTION 2 (Part A): Fix the upsert issue for the webhook <<<
       await supabase.from("subscriptions").upsert({
+        // telegram_id is NOT NULL and was missing
         telegram_id: telegramIdValue, 
+        
+        // end_at is NOT NULL and was missing, but its value was mapped to expires_at
         end_at: expirationDate, 
+        
+        // Remaining data
         plan,
         status: "active",
         payment_ref: event.data.reference,
         amount,
         currency,
+        
+        // Set the conflict target to telegram_id (the unique identifier for a user)
       }, { onConflict: 'telegram_id' });
 
-      // --- ELIMINATE FALLBACK LINK LOGIC (Modification 1/2) ---
-      const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
-      await bot.telegram.sendMessage(
-        telegramIdValue, 
-        `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\n` +
-          `Welcome aboard! 🚀 You now have full access to premium resources and jobs.\n\n` +
-          `👉 Join our premium group here: ${inviteLink}`,
-        { parse_mode: "Markdown" }
-      );
-      // The 'catch' block and fallback logic are entirely removed.
+      // Send invite link + congratulations
+      try {
+        const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
+        await bot.telegram.sendMessage(
+          telegramIdValue, // Use the correct user ID
+          `🎉 *Congratulations!* Your Fabadel Premium subscription is now active.\n\n` +
+            `Welcome aboard! 🚀 You now have full access to premium resources and jobs.\n\n` +
+            `👉 Join our premium group here: ${inviteLink}`,
+          { parse_mode: "Markdown" }
+        );
+      } catch {
+        await bot.telegram.sendMessage(
+          telegramIdValue, // Use the correct user ID
+          `🎉 Subscription active! Could not generate invite link automatically. Use this link instead: ${FALLBACK_INVITE}`,
+          { parse_mode: "Markdown" }
+        );
+      }
     }
 
     res.sendStatus(200);
@@ -211,7 +226,7 @@ app.get("/paystack/callback", async (req, res) => {
     if (response.data.status && response.data.data.status === "success") {
       const metadata = response.data.data.metadata || {};
       const plan = metadata.plan || "unknown";
-      const telegramIdValue = metadata.user_id; 
+      const telegramIdValue = metadata.user_id; // Using a clearer variable name
       const amount = response.data.data.amount || 0;
       const currency = response.data.data.currency || "USD";
 
@@ -222,26 +237,39 @@ app.get("/paystack/callback", async (req, res) => {
       // Calculate expiration date
       const expirationDate = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
 
-      // Supabase Upsert (Already Fixed)
+      // >>> CORRECTION 2 (Part B): Fix the upsert issue for the callback <<<
       await supabase.from("subscriptions").upsert({
+        // telegram_id is NOT NULL and was missing
         telegram_id: telegramIdValue, 
+        
+        // end_at is NOT NULL and was missing, but its value was mapped to expires_at
         end_at: expirationDate, 
+        
+        // Remaining data
         plan,
         status: "active",
-        payment_ref: reference, 
+        payment_ref: reference, // Use reference from query, not event.data.reference
         amount,
         currency,
+        
+        // Set the conflict target to telegram_id (the unique identifier for a user)
       }, { onConflict: 'telegram_id' });
 
-      // --- ELIMINATE FALLBACK LINK LOGIC (Modification 2/2) ---
-      const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
-      await bot.telegram.sendMessage(
-        telegramIdValue, 
-        `🎉 Payment verified! Your Fabadel Premium subscription is now active.\n\n` +
-          `👉 Join our premium group here: ${inviteLink}`,
-        { parse_mode: "Markdown" }
-      );
-      // The 'catch' block and fallback logic are entirely removed.
+      try {
+        const inviteLink = await bot.telegram.exportChatInviteLink(PREMIUM_GROUP);
+        await bot.telegram.sendMessage(
+          telegramIdValue, // Use the correct user ID
+          `🎉 Payment verified! Your Fabadel Premium subscription is now active.\n\n` +
+            `👉 Join our premium group here: ${inviteLink}`,
+          { parse_mode: "Markdown" }
+        );
+      } catch {
+        await bot.telegram.sendMessage(
+          telegramIdValue, // Use the correct user ID
+          `🎉 Payment verified! Could not generate invite link automatically. Use this link: ${FALLBACK_INVITE}`,
+          { parse_mode: "Markdown" }
+        );
+      }
 
       return res.status(200).send("✅ Payment verified. You can close this window.");
     }
