@@ -151,7 +151,16 @@ bot.start((ctx) => {
         [Markup.button.callback('📊 Subscription Status', 'check_status')]
     ]);
     ctx.reply(
-        `👋 Welcome ${ctx.from.first_name}! I am your subscription bot.`,
+        `👋 Hello ${ctx.from.first_name}! 
+        
+        Welcome to *Fabadel Premium* 🚀  
+
+Here you can:
+💼 Access exclusive job opportunities  
+📚 Learn high-value skills from top creators  
+💳 Upgrade anytime for full premium access  
+
+Choose an option below to get started.`,
         keyboard
     );
 });
