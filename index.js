@@ -242,10 +242,9 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
     console.log(`✅ Server running on port ${PORT}`);
     
-    // 1. Set the webhook URL on Telegram's side (This must run AFTER the server starts listening)
+    // 1. SET THE WEBHOOK URL ON TELEGRAM'S SIDE (This happens once the Express server starts)
     if (SERVER_URL) {
         try {
-            // Note: Keep the await here, but the app.use must be defined earlier.
             await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
                 secret_token: WEBHOOK_SECRET,
                 allowed_updates: ['message', 'callback_query', 'my_chat_member'] 
@@ -257,4 +256,5 @@ app.listen(PORT, async () => {
     } else {
         console.error("❌ SERVER_URL environment variable is NOT set. Webhook cannot be registered.");
     }
+    // CRITICAL: Ensure NO CODE follows this block that could cause the main thread to exit.
 });
