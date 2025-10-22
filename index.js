@@ -229,15 +229,23 @@ app.get("/paystack/callback", async (req, res) => {
 });
 
 
+// /index.js (FINAL SECTION)
+
+// ... (All other code, including app.use(express.json()), remains above) ...
+
+// 2. Tell Express to listen for updates on that path (MOVE THIS LINE UP)
+app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
+
 // --- START SERVER (WEBHOOK MODE) ---
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, async () => {
     console.log(`✅ Server running on port ${PORT}`);
     
-    // 1. Set the webhook URL on Telegram's side
+    // 1. Set the webhook URL on Telegram's side (This must run AFTER the server starts listening)
     if (SERVER_URL) {
         try {
+            // Note: Keep the await here, but the app.use must be defined earlier.
             await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
                 secret_token: WEBHOOK_SECRET,
                 allowed_updates: ['message', 'callback_query', 'my_chat_member'] 
@@ -250,6 +258,3 @@ app.listen(PORT, async () => {
         console.error("❌ SERVER_URL environment variable is NOT set. Webhook cannot be registered.");
     }
 });
-
-// 2. Tell Express to listen for updates on that path
-app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
