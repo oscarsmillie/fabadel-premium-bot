@@ -18,9 +18,9 @@ Deno.serve(async (req) => {
 
   console.log(`Checking for expired subscriptions before: ${now}`);
   
-  // 2. Query the 'subscription' table for expired, active subscriptions
+  // 2. Query the 'subscriptions' table for expired, active subscriptions
   const { data: expiredSubs, error: selectError } = await supabase
-    .from('subscription')
+    .from('subscriptions')
     .select('telegram_id, end_at')
     // Filter 1: end_at is less than the current time (i.e., it's expired)
     .lt('end_at', now) 
@@ -48,7 +48,7 @@ Deno.serve(async (req) => {
   console.log(`Found ${expiredSubs.length} subscriptions to kick: IDs ${expiredIds.join(', ')}`);
 
   const { error: updateError } = await supabase
-    .from('subscription')
+    .from('subscriptions')
     .update({ 
         active: false,
         status: 'expired'
