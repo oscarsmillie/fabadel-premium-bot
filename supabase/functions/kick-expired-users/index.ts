@@ -1,116 +1,140 @@
+// /supabase/functions/kick-expired-users/index.ts
+
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.42.5";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.21.0";
 
-// --- Configuration and Initialization ---
-// These variables are injected from your .env.local file upon deployment.
-const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
-const PREMIUM_GROUP = Deno.env.get("PREMIUM_GROUP_ID")!; // e.g., "@FabadelPremiumGroup" or the numeric ID
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-
-/**
- * Calls the Telegram API to ban a user from the premium group, effectively kicking them.
- * Note: The bot must be an administrator in the group with the 'Ban Users' permission.
- * @param {bigint} userId - The Telegram ID of the user to ban.
- */
-async function kickUser(userId: bigint) {
-  const url = `${TELEGRAM_API_URL}/banChatMember`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: PREMIUM_GROUP,
-      user_id: userId,
-    }),
-  });
-
-  const data = await response.json();
-  if (!data.ok) {
-    // Log detailed Telegram API error
-    console.error(`Telegram API failed to kick user ${userId}: ${data.description}`);
-    throw new Error(`Telegram API Error: ${data.description}`);
-  }
-  return data;
-}
-
-/**
- * Main handler for the scheduled job. It only processes GET requests from the scheduler.
- */
-async function handler(req: Request) {
-  // Ensure the request is a GET, as expected from cron/scheduler services
-  if (req.method !== 'GET') {
-    return new Response(
-      JSON.stringify({ message: "Method Not Allowed. Only GET requests accepted for this function." }),
-      { status: 405, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  // 1. Query Supabase for expired but active users
-  const { data: expiredUsers, error: queryError } = await supabase
-    .from("subscriptions")
-    .select("telegram_id")
-    .eq("active", true)
-    // Check if the expiration date ('end_at') is before the current time
-    .lt("end_at", new Date().toISOString()); 
-
-  if (queryError) {
-    console.error("Supabase Query Error:", queryError);
-    return new Response(
-      JSON.stringify({ error: "Database query failed to find expired users." }),
-      { status: 500, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  if (!expiredUsers || expiredUsers.length === 0) {
-    return new Response(
-      JSON.stringify({ message: "No expired users found to process. Job complete." }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    );
-  }
-
-  console.log(`Found ${expiredUsers.length} users with expired subscriptions.`);
-  let kickedCount = 0;
-  let failedKicks = [];
-
-  // 2. Process Kicks and Database Updates
-  for (const user of expiredUsers) {
-    // Ensure telegram_id is treated as bigint for Telegram API
-    const userId = BigInt(user.telegram_id);
-    try {
-      // Kick User (Telegram API call)
-      await kickUser(userId);
-
-      // 3. Update Status (Supabase RPC call to PostgreSQL function)
-      const { error: rpcError } = await supabase.rpc('mark_user_inactive', {
-        user_telegram_id: userId
-      });
-
-      if (rpcError) {
-        console.error(`Failed to update DB status for ${userId}:`, rpcError.message);
-        failedKicks.push({ id: userId, reason: `DB update failed: ${rpcError.message}` });
-      } else {
-        kickedCount++;
-      }
-    } catch (e: unknown) {
-      const errorMessage = e instanceof Error ? e.message : 'Unknown error during kick/update';
-      console.error(`Error processing user ${userId}: ${errorMessage}`);
-      failedKicks.push({ id: userId, reason: errorMessage });
+// --- GLOBAL UTILITY: BigInt Serialization Fix ---
+// This function handles the BigInt error by converting BigInts to strings.
+const customJSONStringify = (data: any) => {
+  return JSON.stringify(data, (key, value) => {
+    // Check if the value is a BigInt
+    if (typeof value === "bigint") {
+      // Convert the BigInt to a string for safe serialization
+      return value.toString();
     }
+    // Return all other types as is
+    return value;
+  });
+};
+
+// --- TELEGRAM NOTIFICATION FUNCTION ---
+async function sendTelegramNotification(message: string): Promise<void> {
+  const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN");
+  const CHAT_ID = Deno.env.get("TELEGRAM_CHAT_ID");
+
+  if (!BOT_TOKEN || !CHAT_ID) {
+    console.error("TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set in secrets.");
+    return;
   }
 
-  return new Response(
-    JSON.stringify({ 
-      message: "Kick-off job completed.", 
-      processed_total: expiredUsers.length,
-      kicked_and_updated_successfully: kickedCount,
-      failures: failedKicks 
-    }),
-    { status: 200, headers: { "Content-Type": "application/json" } },
-  );
+  const url = `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`;
+  const params = {
+    chat_id: CHAT_ID,
+    text: message,
+    parse_mode: "Markdown", // Using Markdown for better formatting
+  };
+
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // Use the custom serializer just in case `params` somehow contains a BigInt (less likely here)
+      body: customJSONStringify(params), 
+    });
+    if (!response.ok) {
+        console.error("Telegram API response was not OK:", await response.text());
+    }
+  } catch (error) {
+    console.error("Failed to send Telegram notification:", error);
+  }
 }
 
-// Start the Deno server and serve the handler
-serve(handler);
+// --- CORE HANDLER ---
+
+serve(async (req) => {
+  const { url, method } = req;
+  console.log(`Received request: ${method} ${url}`);
+
+  try {
+    const supabaseClient = createClient(
+      // Standard Supabase URL and Key setup for Edge Functions
+      Deno.env.get("SUPABASE_URL") ?? "",
+      Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+      // Use the Service Role Key for write operations (kicking users)
+      { global: { headers: { Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` } } }
+    );
+
+    const now = new Date().toISOString();
+
+    // 1. Find users whose subscription has expired
+    const { data: expiredUsers, error: fetchError } = await supabaseClient
+      .from("users")
+      .select("id, email, subscription_expires_at")
+      .lt("subscription_expires_at", now)
+      .eq("is_active", true); // Assuming an 'is_active' flag
+
+    if (fetchError) throw new Error(`Supabase fetch error: ${fetchError.message}`);
+
+    const expiredUserIds = expiredUsers.map((user: any) => user.id);
+    
+    console.log(`Found ${expiredUserIds.length} users with expired subscriptions.`);
+
+    if (expiredUserIds.length > 0) {
+      // 2. Kick Users (Update their status)
+      const { error: updateError } = await supabaseClient
+        .from("users")
+        .update({ is_active: false })
+        .in("id", expiredUserIds);
+
+      if (updateError) throw new Error(`Supabase update error: ${updateError.message}`);
+
+      // 🚨 ADD THIS BLOCK: Update the SUBSCRIPTIONS table status
+      const { error: subsUpdateError } = await supabaseClient
+        .from("subscriptions") // <-- TARGET YOUR SUBSCRIPTION TABLE NAME
+        .update({ status: 'expired', is_active: false }) // <-- SET CORRECT STATUS COLUMN
+        .in("user_id", expiredUserIds); // <-- MATCH BY THE COLUMN THAT LINKS TO USER ID
+
+      if (subsUpdateError) throw new Error(`Subscriptions update error: ${subsUpdateError.message}`);
+
+      // 3. Send Telegram Notification for Expirations
+      const expiredList = expiredUsers.map((u: any) => `- ${u.email || 'ID: ' + u.id}`).join('\n');
+      const expirationMessage = 
+        `🛑 *Subscription Expiration Notice!* 🛑\n\n` +
+        `**${expiredUserIds.length}** users have been marked *inactive*:\n` +
+        `${expiredList}`;
+        
+      await sendTelegramNotification(expirationMessage);
+    }
+    
+    // NOTE: For NEW Subscriptions, you should use a separate Database Trigger
+    // that calls an Edge Function specifically for that event.
+    // Example call (you'd need a separate trigger/function for this):
+    // await sendTelegramNotification("✨ *New Subscriber Alert!* ✨\nUser ID: `123456789`");
+
+
+    // 4. Return success response
+    const responseBody = { 
+      message: "Expired users processed successfully.", 
+      count: expiredUserIds.length 
+    };
+
+    // --- BIGINT FIX APPLIED HERE ---
+    // This is the line where your original error was likely happening (index.ts:105)
+    return new Response(customJSONStringify(responseBody), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    
+  } catch (error) {
+    console.error("Function failed:", error.message);
+    
+    const errorBody = { message: "Internal server error", detail: error.message };
+
+    // --- BIGINT FIX APPLIED HERE ---
+    // Apply the fix to the error response as well, just in case.
+    return new Response(customJSONStringify(errorBody), {
+      status: 500,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+});
