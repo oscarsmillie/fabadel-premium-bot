@@ -6,7 +6,8 @@ import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 import crypto from "crypto";
-import http from "http"; // <-- ADDED: Standard Node.js HTTP module for robustness
+import http from "http"; // Standard Node.js HTTP module for robustness
+import cron from "node-cron"; // <-- ADDED: For scheduling the kick job internally
 
 dotenv.config();
 
@@ -32,7 +33,7 @@ const SERVER_URL = process.env.SERVER_URL;
 
 
 // ======================================================
-// KICK-OFF FUNCTION (For External Scheduler)
+// KICK-OFF FUNCTION (EMBEDDED SCHEDULER)
 // ======================================================
 
 /**
@@ -68,10 +69,12 @@ async function kickExpiredUsers() {
     const kickPromises = expiredUsers.map(async (user) => {
         try {
             // CRITICAL STEP: Bot must be an admin with permission to restrict members
+            // Temporarily ban for 5 minutes (removes user)
             await bot.telegram.banChatMember(PREMIUM_GROUP, user.telegram_id, {
-                until_date: Math.floor(Date.now() / 1000) + 300 // Temporary ban for 5 minutes (removes user)
-            });
-            await bot.telegram.unbanChatMember(PREMIUM_GROUP, user.telegram_id); // Immediately unban them 
+                until_date: Math.floor(Date.now() / 1000) + 300 
+            }); 
+            // Immediately unban them so they can be re-invited if they pay again
+            await bot.telegram.unbanChatMember(PREMIUM_GROUP, user.telegram_id); 
             
             console.log(`Successfully removed user: ${user.telegram_id}`);
             kickedIds.push(user.telegram_id);
@@ -129,16 +132,8 @@ async function kickExpiredUsers() {
     console.log("Kick-off job finished.");
 }
 
-// Expose the kick function as an API endpoint
-app.get("/api/kick-expired", async (req, res) => {
-    // ⚠️ SECURE THIS ENDPOINT! For production, check a secret key.
-    if (req.query.secret !== process.env.CRON_SECRET) {
-        return res.status(401).send("Unauthorized");
-    }
-
-    await kickExpiredUsers();
-    res.status(200).send("Kick-off process initiated.");
-});
+// NOTE: THE PREVIOUS /api/kick-expired ENDPOINT HAS BEEN REMOVED.
+// The kickExpiredUsers function is now scheduled internally.
 
 // ======================================================
 // END KICK-OFF FUNCTION
@@ -162,7 +157,7 @@ Here you can:
 💳 Upgrade anytime for full premium access  
 
 Choose an option below to get started.`,
-        keyboard
+        { parse_mode: "Markdown", reply_markup: keyboard }
     );
 });
 
@@ -363,4 +358,15 @@ server.listen(PORT, () => {
     
     // Call the asynchronous function to register the webhook in the background
     registerWebhook();
+
+    // 3. START THE CRON JOB 
+    // This schedules the kickExpiredUsers function to run every hour (e.g., at 0 minutes past the hour).
+    // You can adjust the cron expression as needed (e.g., '0 */6 * * *' for every 6 hours).
+    cron.schedule('0 * * * *', () => { 
+        kickExpiredUsers();
+    }, {
+        scheduled: true,
+        timezone: "Etc/UTC" // Use a consistent timezone for scheduling
+    });
+    console.log("⏰ Expired user kick-off job scheduled to run hourly (0 * * * *).");
 });
