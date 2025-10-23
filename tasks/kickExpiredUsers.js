@@ -38,10 +38,10 @@ export async function kickExpiredUsers(bot) {
         );
 
         // Kick from premium group
-        await bot.telegram.banChatMember(process.env.premium_group, user.telegram_id, {
+        await bot.telegram.banChatMember(process.env.PREMIUM_GROUP, user.telegram_id, {
           until_date: Math.floor(Date.now() / 1000) + 300,
         });
-        await bot.telegram.unbanChatMember(process.env.premium_group, user.telegram_id);
+        await bot.telegram.unbanChatMember(process.env.PREMIUM_GROUP, user.telegram_id);
 
         kickedIds.push(user.telegram_id);
       } catch (err) {
@@ -58,7 +58,7 @@ export async function kickExpiredUsers(bot) {
       console.log(`✅ Marked ${kickedIds.length} users as expired.`);
 
       await bot.telegram.sendMessage(
-        process.env.admin_chat_id,
+        process.env.ADMIN_CHAT_ID,
         `📢 ${kickedIds.length} subscription(s) expired and users were notified & removed.`,
         { parse_mode: "Markdown" }
       );
