@@ -27,7 +27,7 @@ const PREMIUM_GROUP = "@FabadelPremiumGroup";
 const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
 // Webhook Configuration Variables
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'a-strong-secret-key-you-must-set';
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'a-new-unique-secret-key-12345'; // <-- CHANGED
 const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 const SERVER_URL = process.env.SERVER_URL;
 
