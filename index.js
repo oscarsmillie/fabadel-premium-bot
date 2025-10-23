@@ -8,6 +8,7 @@ import axios from "axios";
 import crypto from "crypto";
 import http from "http";
 import cron from "node-cron";
+import { kickExpiredUsers } from "./tasks/kickExpiredUsers.js"; // ✅ added import
 
 dotenv.config();
 
@@ -27,89 +28,17 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "a-new-unique-secret-key-12
 const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 const SERVER_URL = process.env.SERVER_URL;
 
-// ======================================================
-// KICK-OFF FUNCTION (EMBEDDED SCHEDULER)
-// ======================================================
-async function kickExpiredUsers() {
-  console.log("Starting kickExpiredUsers job...");
-
-  const { data: expiredUsers, error } = await supabase
-    .from("subscriptions")
-    .select("telegram_id, end_at, plan, status, payment_ref")
-    .eq("status", "active")
-    .lt("end_at", new Date().toISOString());
-
-  if (error) {
-    console.error("Supabase query error for kick-off:", error);
-    return;
+// ✅ Manual cron trigger endpoint
+app.get("/run-cron", async (req, res) => {
+  try {
+    console.log("⏰ Manual cron trigger initiated...");
+    await kickExpiredUsers(bot);
+    res.send("✅ Cron job executed successfully!");
+  } catch (error) {
+    console.error("❌ Error running cron job manually:", error);
+    res.status(500).send("Error running cron job manually");
   }
-
-  if (!expiredUsers || expiredUsers.length === 0) {
-    console.log("No subscriptions found to expire.");
-    return;
-  }
-
-  console.log(`Found ${expiredUsers.length} subscriptions to kick.`);
-
-  const kickedIds = [];
-  const failedKicks = [];
-
-  const kickPromises = expiredUsers.map(async (user) => {
-    try {
-      await bot.telegram.banChatMember(PREMIUM_GROUP, user.telegram_id, {
-        until_date: Math.floor(Date.now() / 1000) + 300,
-      });
-      await bot.telegram.unbanChatMember(PREMIUM_GROUP, user.telegram_id);
-
-      console.log(`Successfully removed user: ${user.telegram_id}`);
-      kickedIds.push(user.telegram_id);
-      return user.telegram_id;
-    } catch (kickError) {
-      console.error(`❌ Failed to remove user ${user.telegram_id}. Error: ${kickError.message}`);
-      failedKicks.push(user.telegram_id);
-      return null;
-    }
-  });
-
-  await Promise.all(kickPromises);
-
-  if (kickedIds.length > 0) {
-    const { error: updateError } = await supabase
-      .from("subscriptions")
-      .update({ status: "expired", active: false })
-      .in("telegram_id", kickedIds);
-
-    if (updateError) {
-      console.error("Database update error:", updateError);
-    } else {
-      console.log(`Successfully updated status for ${kickedIds.length} subscriptions.`);
-    }
-  }
-
-  const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-  if (kickedIds.length > 0 && ADMIN_CHAT_ID) {
-    const expiredList = expiredUsers
-      .filter((u) => kickedIds.includes(u.telegram_id))
-      .map((u, index) => `${index + 1}. ID: \`${u.telegram_id}\` (Plan: ${u.plan})`)
-      .join("\n");
-
-    const expirationMessage =
-      `🛑 *Subscription Expiration Notice!* 🛑\n\n` +
-      `**${kickedIds.length}** subscriptions removed and marked *expired*:\n` +
-      `${expiredList}`;
-
-    try {
-      await bot.telegram.sendMessage(ADMIN_CHAT_ID, expirationMessage, {
-        parse_mode: "Markdown",
-      });
-      console.log("✅ Admin notification sent successfully.");
-    } catch (alertError) {
-      console.error("❌ Failed to send admin notification:", alertError.message);
-    }
-  }
-
-  console.log("Kick-off job finished.");
-}
+});
 
 // ======================================================
 // BOT COMMANDS
@@ -312,10 +241,11 @@ const server = http.createServer(app);
 server.listen(PORT, () => {
   console.log(`✅ Server running on port ${PORT}`);
 
+  // ✅ Hourly cron job to kick expired users
   cron.schedule(
     "0 * * * *",
     () => {
-      kickExpiredUsers();
+      kickExpiredUsers(bot);
     },
     {
       scheduled: true,
