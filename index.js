@@ -21,7 +21,7 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const PREMIUM_GROUP = "@FabadelPremiumGroup";
+const PREMIUM_GROUP = "-1003189621026";
 const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "a-new-unique-secret-key-12345";
