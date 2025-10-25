@@ -1,256 +1,416 @@
-// /index.js - FINAL ROBUST VERSION (FIXED BUTTONS + WEBHOOK ORDER)
-
+// /index.js - INTASEND MIGRATION
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
-import crypto from "crypto";
-import http from "http";
-import cron from "node-cron";
-import { kickExpiredUsers } from "./tasks/kickExpiredUsers.js"; // ✅ added import
+// import crypto from "crypto"; // Paystack only, removed
+import http from "http"; 
 
 dotenv.config();
 
 const app = express();
+// Ensure express.json() is used before any routes or webhooks that require JSON bodies
 app.use(express.json());
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const PREMIUM_GROUP = "-1003189621026";
+// Replace with your group/channel username or numeric ID
+const PREMIUM_GROUP = "@FabadelPremiumGroup";
+// The static invite link to be used for all successful payments
 const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "a-new-unique-secret-key-12345";
+// Webhook Configuration Variables
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || 'a-strong-secret-key-you-must-set';
 const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 const SERVER_URL = process.env.SERVER_URL;
 
-// ✅ Manual cron trigger endpoint
-app.get("/run-cron", async (req, res) => {
-  try {
-    console.log("⏰ Manual cron trigger initiated...");
-    await kickExpiredUsers(bot);
-    res.send("✅ Cron job executed successfully!");
-  } catch (error) {
-    console.error("❌ Error running cron job manually:", error);
-    res.status(500).send("Error running cron job manually");
-  }
+// NEW INTASEND VARIABLES
+const INTASEND_API_BASE = "https://payment.intasend.com/api/v1"; // Or sandbox URL
+const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY; // Used in front-end/pop-up, but good to have
+const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY; // CRITICAL: For API calls
+const INTASEND_WEBHOOK_SECRET = process.env.INTASEND_WEBHOOK_SECRET; // CRITICAL: For webhook verification
+
+// ======================================================
+// KICK-OFF FUNCTION (For External Scheduler)
+// ======================================================
+
+/**
+ * Checks for expired users in the database, kicks them from the Telegram group,
+ * updates the subscription status, and sends a notification.
+ */
+async function kickExpiredUsers() {
+    console.log("Starting kickExpiredUsers job...");
+
+    // 1. Get expired but still active subscriptions
+    const { data: expiredUsers, error } = await supabase
+        .from("subscriptions")
+        .select("telegram_id, end_at, plan, status, payment_ref")
+        .eq("status", "active")
+        .lt("end_at", new Date().toISOString()); 
+
+    if (error) {
+        console.error("Supabase query error for kick-off:", error);
+        return;
+    }
+
+    if (!expiredUsers || expiredUsers.length === 0) {
+        console.log("No subscriptions found to expire.");
+        return;
+    }
+
+    console.log(`Found ${expiredUsers.length} subscriptions to kick.`);
+
+    const kickedIds = [];
+    const failedKicks = [];
+
+    // 2. Kick Users and track success/failure
+    const kickPromises = expiredUsers.map(async (user) => {
+        try {
+            // CRITICAL STEP: Bot must be an admin with permission to restrict members
+            await bot.telegram.banChatMember(PREMIUM_GROUP, user.telegram_id, {
+                until_date: Math.floor(Date.now() / 1000) + 300 // Temporary ban for 5 minutes (removes user)
+            });
+            await bot.telegram.unbanChatMember(PREMIUM_GROUP, user.telegram_id); // Immediately unban them 
+            
+            console.log(`Successfully removed user: ${user.telegram_id}`);
+            kickedIds.push(user.telegram_id);
+            return user.telegram_id;
+        } catch (kickError) {
+            // Logs the error that explains why the removal failed (usually permission-related)
+            console.error(`❌ Failed to remove user ${user.telegram_id}. Error: ${kickError.message}`);
+            failedKicks.push(user.telegram_id);
+            return null;
+        }
+    });
+
+    await Promise.all(kickPromises);
+
+    // 3. Update the database ONLY for successfully kicked users
+    if (kickedIds.length > 0) {
+        const { error: updateError } = await supabase
+            .from("subscriptions")
+            .update({ status: 'expired', active: false }) 
+            .in("telegram_id", kickedIds);
+
+        if (updateError) {
+            console.error("Database update error:", updateError);
+        } else {
+            console.log(`Successfully updated status for ${kickedIds.length} subscriptions.`);
+        }
+    }
+
+    // 4. Send Telegram Notification 
+    const ADMIN_CHAT_ID = process.env.TELEGRAM_CHAT_ID; 
+    if (kickedIds.length > 0 && ADMIN_CHAT_ID) {
+        const expiredList = expiredUsers
+            .filter(u => kickedIds.includes(u.telegram_id))
+            .map((u, index) => 
+                `${index + 1}. ID: \`${u.telegram_id}\` (Plan: ${u.plan})`
+            )
+            .join('\n');
+
+        const expirationMessage = 
+            `🛑 *Subscription Expiration Notice!* 🛑\n\n` +
+            `**${kickedIds.length}** subscriptions removed and marked *expired*:\n` +
+            `${expiredList}`;
+            
+        try {
+            await bot.telegram.sendMessage(ADMIN_CHAT_ID, expirationMessage, { 
+                parse_mode: "Markdown" 
+            });
+            console.log("✅ Admin notification sent successfully.");
+        } catch (alertError) {
+            // Logs the error if the admin message fails (usually wrong chat ID or bot blocked)
+            console.error("❌ Failed to send admin notification:", alertError.message);
+        }
+    }
+    
+    console.log("Kick-off job finished.");
+}
+
+// Expose the kick function as an API endpoint
+app.get("/api/kick-expired", async (req, res) => {
+    // ⚠️ SECURE THIS ENDPOINT! For production, check a secret key.
+    if (req.query.secret !== process.env.CRON_SECRET) {
+        return res.status(401).send("Unauthorized");
+    }
+
+    await kickExpiredUsers();
+    res.status(200).send("Kick-off process initiated.");
 });
 
 // ======================================================
-// BOT COMMANDS
+// END KICK-OFF FUNCTION
 // ======================================================
-bot.start((ctx) => {
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("💳 View Plans", "view_plans")],
-    [Markup.button.callback("📊 Subscription Status", "check_status")],
-  ]);
 
-  return ctx.reply(
-    `👋 Hello ${ctx.from.first_name}! 
+// --- START COMMAND ---
+bot.start((ctx) => {
+    const keyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('💳 View Plans', 'view_plans')],
+        [Markup.button.callback('📊 Subscription Status', 'check_status')]
+    ]);
+    ctx.reply(
+        `👋 Hello ${ctx.from.first_name}! 
         
-Welcome to *Fabadel Premium* 🚀  
+Welcome to *Fabadel Premium* 🚀 
 
 Here you can:
-💼 Access exclusive job opportunities  
-📚 Learn high-value skills from top creators  
-💳 Upgrade anytime for full premium access  
+💼 Access exclusive job opportunities 
+📚 Learn high-value skills from top creators 
+💳 Upgrade anytime for full premium access 
 
 Choose an option below to get started.`,
-    { parse_mode: "Markdown", ...keyboard }
-  );
+        keyboard
+    );
 });
 
 // --- VIEW PLANS ---
-bot.action("view_plans", (ctx) => {
-  const plansKeyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("KES 299/Month", "kes_1m")],
-    [Markup.button.callback("KES 2,999/Year", "kes_12m")],
-    [Markup.button.callback("USD 2.30/Month", "usd_1m")],
-    [Markup.button.callback("USD 23.00/Year", "usd_12m")],
-  ]);
-
-  return ctx.reply("Select your preferred plan and currency:", plansKeyboard);
+bot.action('view_plans', (ctx) => {
+    const plansKeyboard = Markup.inlineKeyboard([
+        [Markup.button.callback('KES 299/Month', 'kes_1m')],
+        [Markup.button.callback('KES 2,999/Year', 'kes_12m')],
+        [Markup.button.callback('USD 2.30/Month', 'usd_1m')],
+        [Markup.button.callback('USD 23.00/Year', 'usd_12m')]
+    ]);
+    ctx.reply('Select your preferred plan and currency:', plansKeyboard);
 });
 
-// --- ASK FOR EMAIL AND INITIATE PAYMENT ---
+
+// --- ASK FOR EMAIL AND INITIATE PAYMENT (INTASEND) ---
 bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
-  const plan = ctx.match[0];
-  const userId = ctx.from.id;
+    const plan = ctx.match[0];
+    const userId = ctx.from.id;
 
-  await ctx.reply("📧 Please enter your email address for payment:");
+    await ctx.reply("📧 Please enter your email address for payment:");
 
-  const handler = async (msgCtx) => {
-    if (msgCtx.from.id !== userId) return;
+    const handler = async (msgCtx) => {
+        if (msgCtx.from.id !== userId) return;
 
-    const email = msgCtx.message.text.trim();
-    if (!email.includes("@")) return msgCtx.reply("❌ Please provide a valid email address.");
+        const email = msgCtx.message.text.trim();
+        if (!email.includes("@")) return msgCtx.reply("❌ Please provide a valid email address.");
 
-    const amount =
-      plan === "kes_1m"
-        ? 29900
-        : plan === "kes_12m"
-        ? 299900
-        : plan === "usd_1m"
-        ? 230
-        : 2300;
-    const currency = plan.startsWith("kes") ? "KES" : "USD";
+        // NOTE: IntaSend expects amount in the major unit (e.g., KES 299.00)
+        const amount =
+            plan === "kes_1m"
+                ? 299.00
+                : plan === "kes_12m"
+                ? 2999.00
+                : plan === "usd_1m"
+                ? 2.30
+                : 23.00;
+        const currency = plan.startsWith("kes") ? "KES" : "USD";
+        
+        // Use Telegram user ID as the unique reference
+        const unique_ref = `${userId}_${Date.now()}`;
 
-    try {
-      const res = await axios.post(
-        "https://api.paystack.co/transaction/initialize",
-        {
-          email,
-          amount,
-          currency,
-          metadata: { user_id: userId, plan },
-          callback_url: `${SERVER_URL}/paystack/callback`,
-        },
-        { headers: { Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}` } }
-      );
+        try {
+            const res = await axios.post(
+                `${INTASEND_API_BASE}/checkout/`,
+                {
+                    public_key: INTASEND_PUBLISHABLE_KEY,
+                    amount: amount,
+                    currency: currency,
+                    api_ref: unique_ref, // Use as the payment reference
+                    customer: {
+                        first_name: msgCtx.from.first_name || 'TGUser',
+                        last_name: msgCtx.from.last_name || userId.toString(),
+                        email: email,
+                        // phone_number is highly recommended for M-Pesa payments
+                        // phone_number: "+2547XXXXXXXX", 
+                    },
+                    // IntaSend metadata is a custom object you can send
+                    metadata: { user_id: userId, plan: plan },
+                    // CRITICAL: IntaSend uses a dedicated Webhook for status updates,
+                    // but we still provide a Redirect URL for the user after payment.
+                    redirect_url: `${SERVER_URL}/intasend/callback`,
+                },
+                { 
+                    headers: { 
+                        'Authorization': `Bearer ${INTASEND_SECRET_KEY}`,
+                        'Content-Type': 'application/json' 
+                    } 
+                }
+            );
 
-      const payUrl = res.data.data.authorization_url;
-      await msgCtx.reply(`💳 Complete your payment here:\n${payUrl}`);
-    } catch (err) {
-      console.error("Paystack init error:", err);
-      await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
-    }
+            // IntaSend Payment Link API returns a direct URL for the checkout page
+            const payUrl = res.data.url;
+            
+            if (!payUrl) {
+                console.error("IntaSend init error: No payment URL returned.", res.data);
+                await msgCtx.reply("❌ Failed to initialize payment. No URL found.");
+            } else {
+                await msgCtx.reply(`💳 Complete your payment for *${currency} ${amount.toFixed(2)}* here:`, {
+                    reply_markup: Markup.inlineKeyboard([
+                        [Markup.button.url('Pay Now', payUrl)]
+                    ]).reply_markup,
+                    parse_mode: 'Markdown'
+                });
+            }
+        } catch (err) {
+            console.error("IntaSend init error:", err.response?.data || err.message);
+            await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
+        }
 
-    stopListening();
-  };
+        // FIX FOR TYPEERROR: CALL THE UNLISTEN FUNCTION
+        stopListening();
+    };
 
-  const stopListening = bot.on("text", handler);
+    // CAPTURE THE UNLISTEN FUNCTION RETURNED BY bot.on
+    const stopListening = bot.on("text", handler);
 });
 
 // --- CHECK STATUS ---
 bot.action("check_status", async (ctx) => {
-  const userId = ctx.from.id;
+    const userId = ctx.from.id;
 
-  const { data, error } = await supabase
-    .from("subscriptions")
-    .select("status, end_at")
-    .eq("telegram_id", userId)
-    .single();
+    const { data, error } = await supabase
+        .from("subscriptions")
+        .select("status, end_at")
+        .eq("telegram_id", userId)
+        .single();
 
-  if (error || !data) {
-    await ctx.reply("❌ You do not have an active subscription.");
-  } else {
-    await ctx.reply(
-      `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`,
-      { parse_mode: "Markdown" }
-    );
-  }
-});
-
-// --- PAYSTACK WEBHOOK ---
-app.post("/paystack/webhook", express.json({ type: "*/*" }), async (req, res) => {
-  const secret = process.env.PAYSTACK_WEBHOOK_SECRET;
-  const hash = crypto.createHmac("sha512", secret).update(JSON.stringify(req.body)).digest("hex");
-
-  if (hash !== req.headers["x-paystack-signature"]) {
-    console.error("❌ Paystack Webhook: Signature mismatch!");
-    return res.sendStatus(400);
-  }
-
-  const event = req.body;
-
-  if (event.event === "charge.success") {
-    const { status, reference, metadata, amount: paidAmount } = event.data;
-    const { user_id: telegram_id, plan } = metadata;
-
-    if (status !== "success" || !telegram_id || !plan) {
-      return res.sendStatus(200);
-    }
-
-    const durationMonths = plan.endsWith("1m") ? 1 : 12;
-    const end_at = new Date();
-    end_at.setMonth(end_at.getMonth() + durationMonths);
-
-    const { error } = await supabase
-      .from("subscriptions")
-      .upsert(
-        {
-          telegram_id: parseInt(telegram_id),
-          plan,
-          start_at: new Date().toISOString(),
-          end_at: end_at.toISOString(),
-          status: "active",
-          payment_ref: reference,
-          amount_paid: paidAmount / 100,
-          active: true,
-        },
-        { onConflict: "telegram_id" }
-      );
-
-    if (error) {
-      console.error("Supabase upsert error:", error);
+    if (error || !data) {
+        await ctx.reply("❌ You do not have an active subscription.");
     } else {
-      console.log(`✅ Subscription created/updated for user ${telegram_id}`);
-
-      try {
-        await bot.telegram.sendMessage(
-          telegram_id,
-          `🎉 Congratulations! Your *${durationMonths}-month* subscription is now active.\n\n` +
-            `🔗 Join your premium group here: ${STATIC_INVITE_LINK}`,
-          { parse_mode: "Markdown" }
+        await ctx.reply(
+            `✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`,
+            { parse_mode: "Markdown" }
         );
-      } catch (msgError) {
-        console.error(`❌ Failed to send welcome message to user ${telegram_id}:`, msgError.message);
-      }
     }
-  }
-
-  res.sendStatus(200);
 });
 
-// --- PAYSTACK CALLBACK URL ---
-app.get("/paystack/callback", async (req, res) => {
-  res.send(
-    "Payment complete! Please check your Telegram chat for your subscription confirmation and group invite link."
-  );
+
+// --- INTASEND WEBHOOK ---
+// Set this URL in your IntaSend dashboard: https://yourdomain.com/intasend/webhook
+app.post("/intasend/webhook", async (req, res) => {
+    // 1. Validate the IntaSend webhook secret key
+    const headerSecret = req.headers['x-intasend-secret'];
+    
+    if (headerSecret !== INTASEND_WEBHOOK_SECRET) {
+        console.error("❌ IntaSend Webhook: Secret mismatch!");
+        return res.sendStatus(401); // Unauthorized
+    }
+
+    const event = req.body;
+    console.log("IntaSend Webhook Received:", event.checkout_id, event.state);
+
+    // IntaSend sends a 'state' field which should be 'COMPLETE' for a success
+    if (event.state === 'COMPLETE') {
+        const { state, tracking_id, metadata, amount, currency, api_ref } = event;
+        const telegram_id = metadata?.user_id;
+        const plan = metadata?.plan;
+        
+        // Essential check for required fields
+        if (!telegram_id || !plan) {
+             console.error("IntaSend Webhook: Missing telegram_id or plan in metadata. Ignoring.");
+             return res.sendStatus(200); 
+        }
+
+        // Calculate subscription duration
+        const durationMonths = plan.endsWith('1m') ? 1 : 12;
+        const end_at = new Date();
+        end_at.setMonth(end_at.getMonth() + durationMonths);
+
+        // 2. Update Supabase
+        const { error } = await supabase
+            .from("subscriptions")
+            .upsert(
+                {
+                    telegram_id: parseInt(telegram_id),
+                    plan: plan,
+                    start_at: new Date().toISOString(),
+                    end_at: end_at.toISOString(),
+                    status: 'active',
+                    payment_ref: tracking_id || api_ref, // Use tracking_id or api_ref
+                    amount_paid: amount,
+                    active: true
+                },
+                { onConflict: 'telegram_id' }
+            );
+
+        if (error) {
+            console.error("Supabase upsert error:", error);
+        } else {
+            console.log(`✅ Subscription created/updated for user ${telegram_id}`);
+            
+            // 3. Send success message and invite link
+            try {
+                await bot.telegram.sendMessage(
+                    telegram_id,
+                    `🎉 Congratulations! Your *${durationMonths}-month* subscription is now active.\n\n` +
+                    `🔗 Join your premium group here: ${STATIC_INVITE_LINK}`,
+                    { parse_mode: "Markdown" }
+                );
+            } catch (msgError) {
+                console.error(`❌ Failed to send welcome message to user ${telegram_id}:`, msgError.message);
+            }
+        }
+    } else if (event.state === 'FAILED') {
+         const { metadata } = event;
+         const telegram_id = metadata?.user_id;
+
+         if (telegram_id) {
+             try {
+                await bot.telegram.sendMessage(
+                    telegram_id,
+                    `❌ Your payment has *failed*. Please try the payment process again or contact support.`,
+                    { parse_mode: "Markdown" }
+                );
+            } catch (msgError) {
+                console.error(`❌ Failed to send failure message to user ${telegram_id}:`, msgError.message);
+            }
+         }
+    }
+    
+    res.sendStatus(200); // Always respond 200 to IntaSend quickly
 });
 
-// ======================================================
-// WEBHOOK SETUP (Option 1 — REGISTER FIRST)
-// ======================================================
-if (SERVER_URL) {
-  try {
-    await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
-      secret_token: WEBHOOK_SECRET,
-      allowed_updates: ["message", "callback_query", "my_chat_member"],
-    });
-    console.log(`✅ Telegram Webhook set to: ${SERVER_URL}${WEBHOOK_PATH}`);
-  } catch (err) {
-    console.error("❌ Failed to set Telegram Webhook. Error:", err.message);
-  }
-} else {
-  console.error("❌ SERVER_URL environment variable is NOT set. Webhook cannot be registered.");
+// --- INTASEND CALLBACK URL ---
+// This is where the user lands after payment. We redirect them back to the bot.
+app.get("/intasend/callback", (req, res) => {
+    res.send('Payment complete! Please check your Telegram chat for your subscription confirmation and group invite link.');
+    // Optionally, you could redirect to the bot:
+    // res.redirect('https://t.me/YourBotUsername');
+});
+
+// --- NEW FUNCTION TO HANDLE ASYNC WEBHOOK REGISTRATION ---
+async function registerWebhook() {
+    if (SERVER_URL) {
+        try {
+            await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
+                secret_token: WEBHOOK_SECRET,
+                allowed_updates: ['message', 'callback_query', 'my_chat_member'] 
+            });
+            console.log(`✅ Telegram Webhook set to: ${SERVER_URL}${WEBHOOK_PATH}`);
+        } catch (err) {
+            console.error('❌ Failed to set Telegram Webhook. Error:', err.message);
+        }
+    } else {
+        console.error("❌ SERVER_URL environment variable is NOT set. Webhook cannot be registered.");
+    }
 }
 
-// ======================================================
-// START SERVER
-// ======================================================
-app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
 
+// ======================================================
+// START SERVER (FINAL, ROBUST WEBHOOK MODE)
+// ======================================================
+
+// 1. Tell Express to listen for updates on that path (CRITICAL ORDER)
+// This registers the middleware that handles incoming Telegram requests.
+app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET)); 
+
+// 2. START SERVER USING HTTP.CREATESERVER TO PREVENT SIGTERM CRASH
 const PORT = process.env.PORT || 3000;
-const server = http.createServer(app);
+const server = http.createServer(app); // Use standard http server
 
-server.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
-
-  // ✅ Hourly cron job to kick expired users
-  cron.schedule(
-    "0 * * * *",
-    () => {
-      kickExpiredUsers(bot);
-    },
-    {
-      scheduled: true,
-      timezone: "Etc/UTC",
-    }
-  );
-  console.log("⏰ Expired user kick-off job scheduled to run hourly (0 * * * *).");
+server.listen(PORT, () => { 
+    console.log(`✅ Server running on port ${PORT}`);
+    
+    // Call the asynchronous function to register the webhook in the background
+    registerWebhook();
 });
