@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
-// import crypto from "crypto"; // Paystack only, removed
 import http from "http"; 
 
 dotenv.config();
@@ -191,11 +190,21 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
     let stopListening; 
 
     const handler = async (msgCtx) => {
+        // 1. Guard against non-target users
         if (msgCtx.from.id !== userId) return;
 
         const email = msgCtx.message.text.trim();
-        // Return if email is invalid, DO NOT call stopListening yet
-        if (!email.includes("@")) return msgCtx.reply("❌ Please provide a valid email address.");
+        // 2. Guard against invalid email and immediately send feedback
+        if (!email.includes("@")) {
+            return msgCtx.reply("❌ Please provide a valid email address.");
+        }
+        
+        // --- Listener Cleanup (Crucial Fix) ---
+        // We call stopListening() now because valid input has been received,
+        // and we want to remove the temporary listener before running the API call.
+        if (stopListening) {
+            stopListening(); 
+        }
 
         // NOTE: IntaSend expects amount in the major unit (e.g., KES 299.00)
         const amount =
@@ -234,6 +243,7 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                 },
                 { 
                     headers: { 
+                        // IntaSend Authentication Fix (Trimming Key)
                         'Authorization': `Bearer ${INTASEND_SECRET_KEY.trim()}`,
                         'Content-Type': 'application/json' 
                     } 
@@ -255,13 +265,9 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                 });
             }
         } catch (err) {
+            // IntaSend Authentication Failure (Needs ENV fix)
             console.error("IntaSend init error:", err.response?.data || err.message);
-            await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
-        }
-        
-        // FIX: The stopListening function is only called *after* all input has been successfully processed.
-        if (stopListening) {
-            stopListening(); 
+            await msgCtx.reply("❌ Failed to initialize payment. Please try again or contact support.");
         }
     };
 
