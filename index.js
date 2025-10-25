@@ -19,8 +19,6 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Note: userHandlerMap removed as it is not the correct cleanup pattern for your Telegraf version.
-
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup";
 // The static invite link to be used for all successful payments
@@ -190,18 +188,13 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
 
     await ctx.reply("📧 Please enter your email address for payment:");
 
-    // FIX 2: Declare stopListening locally to capture the cleanup function
     let stopListening; 
 
     const handler = async (msgCtx) => {
         if (msgCtx.from.id !== userId) return;
 
-        // FIX 2: Call the cleanup function returned by bot.on
-        if (stopListening) {
-            stopListening(); 
-        }
-
         const email = msgCtx.message.text.trim();
+        // Return if email is invalid, DO NOT call stopListening yet
         if (!email.includes("@")) return msgCtx.reply("❌ Please provide a valid email address.");
 
         // NOTE: IntaSend expects amount in the major unit (e.g., KES 299.00)
@@ -241,7 +234,6 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                 },
                 { 
                     headers: { 
-                        // FIX 1: Trim the secret key to prevent header invalid character error
                         'Authorization': `Bearer ${INTASEND_SECRET_KEY.trim()}`,
                         'Content-Type': 'application/json' 
                     } 
@@ -266,9 +258,14 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
             console.error("IntaSend init error:", err.response?.data || err.message);
             await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
         }
+        
+        // FIX: The stopListening function is only called *after* all input has been successfully processed.
+        if (stopListening) {
+            stopListening(); 
+        }
     };
 
-    // FIX 2: Assign the cleanup function returned by bot.on to stopListening
+    // Assign the cleanup function returned by bot.on to stopListening
     stopListening = bot.on("text", handler); 
 });
 
