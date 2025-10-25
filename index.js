@@ -187,26 +187,26 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
 
     await ctx.reply("📧 Please enter your email address for payment:");
 
-    let stopListening; 
-
-    const handler = async (msgCtx) => {
+    // CRITICAL FIX: The cleanup function (stopListening) is assigned synchronously
+    // and is guaranteed to be callable immediately upon handler execution.
+    const stopListening = bot.on("text", async (msgCtx) => {
         // 1. Guard against non-target users
         if (msgCtx.from.id !== userId) return;
+        
+        // 2. Remove the listener immediately after receiving the message from the target user.
+        if (stopListening) {
+            stopListening();
+        }
 
         const email = msgCtx.message.text.trim();
-        // 2. Guard against invalid email and immediately send feedback
+        
+        // 3. Validate input (If invalid, the listener is gone, forcing user to restart with button)
         if (!email.includes("@")) {
-            return msgCtx.reply("❌ Please provide a valid email address.");
+            return msgCtx.reply("❌ That doesn't look like a valid email. Please click a plan button again to restart the payment process.");
         }
         
-        // --- Listener Cleanup (Crucial Fix) ---
-        // We call stopListening() now because valid input has been received,
-        // and we want to remove the temporary listener before running the API call.
-        if (stopListening) {
-            stopListening(); 
-        }
+        // --- Payment Logic Starts Here ---
 
-        // NOTE: IntaSend expects amount in the major unit (e.g., KES 299.00)
         const amount =
             plan === "kes_1m"
                 ? 299.00
@@ -216,8 +216,6 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                 ? 2.30
                 : 23.00;
         const currency = plan.startsWith("kes") ? "KES" : "USD";
-        
-        // Use Telegram user ID as the unique reference
         const unique_ref = `${userId}_${Date.now()}`;
 
         try {
@@ -232,8 +230,6 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                         first_name: msgCtx.from.first_name || 'TGUser',
                         last_name: msgCtx.from.last_name || userId.toString(),
                         email: email,
-                        // phone_number is highly recommended for M-Pesa payments
-                        // phone_number: "+2547XXXXXXXX", 
                     },
                     // IntaSend metadata is a custom object you can send
                     metadata: { user_id: userId, plan: plan },
@@ -265,14 +261,11 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                 });
             }
         } catch (err) {
-            // IntaSend Authentication Failure (Needs ENV fix)
+            // If IntaSend call fails (e.g., authentication error)
             console.error("IntaSend init error:", err.response?.data || err.message);
             await msgCtx.reply("❌ Failed to initialize payment. Please try again or contact support.");
         }
-    };
-
-    // Assign the cleanup function returned by bot.on to stopListening
-    stopListening = bot.on("text", handler); 
+    }); 
 });
 
 // --- CHECK STATUS ---
