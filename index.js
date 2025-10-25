@@ -18,6 +18,10 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Map to temporarily store user state: { userId: 'plan_code' }
+// This prevents the "stopListening is not a function" error.
+const userState = new Map();
+
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup";
 // The static invite link to be used for all successful payments
@@ -30,7 +34,7 @@ const SERVER_URL = process.env.SERVER_URL;
 
 // NEW INTASEND VARIABLES
 const INTASEND_API_BASE = "https://payment.intasend.com/api/v1"; // Or sandbox URL
-const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY; // Used in front-end/pop-up, but good to have
+const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY; 
 const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY; // CRITICAL: For API calls
 const INTASEND_WEBHOOK_SECRET = process.env.INTASEND_WEBHOOK_SECRET; // CRITICAL: For webhook verification
 
@@ -180,93 +184,104 @@ bot.action('view_plans', (ctx) => {
 });
 
 
-// --- ASK FOR EMAIL AND INITIATE PAYMENT (INTASEND) ---
+// --- STEP 1: ASK FOR EMAIL (State setting) ---
 bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
     const plan = ctx.match[0];
     const userId = ctx.from.id;
 
+    // Set the user's state to the chosen plan
+    userState.set(userId, plan);
+
+    // Send the prompt for email
     await ctx.reply("📧 Please enter your email address for payment:");
-
-    // CRITICAL FIX: The cleanup function (stopListening) is assigned synchronously
-    // and is guaranteed to be callable immediately upon handler execution.
-    const stopListening = bot.on("text", async (msgCtx) => {
-        // 1. Guard against non-target users
-        if (msgCtx.from.id !== userId) return;
-        
-        // 2. Remove the listener immediately after receiving the message from the target user.
-        if (stopListening) {
-            stopListening();
-        }
-
-        const email = msgCtx.message.text.trim();
-        
-        // 3. Validate input (If invalid, the listener is gone, forcing user to restart with button)
-        if (!email.includes("@")) {
-            return msgCtx.reply("❌ That doesn't look like a valid email. Please click a plan button again to restart the payment process.");
-        }
-        
-        // --- Payment Logic Starts Here ---
-
-        const amount =
-            plan === "kes_1m"
-                ? 299.00
-                : plan === "kes_12m"
-                ? 2999.00
-                : plan === "usd_1m"
-                ? 2.30
-                : 23.00;
-        const currency = plan.startsWith("kes") ? "KES" : "USD";
-        const unique_ref = `${userId}_${Date.now()}`;
-
-        try {
-            const res = await axios.post(
-                `${INTASEND_API_BASE}/checkout/`,
-                {
-                    public_key: INTASEND_PUBLISHABLE_KEY,
-                    amount: amount,
-                    currency: currency,
-                    api_ref: unique_ref, // Use as the payment reference
-                    customer: {
-                        first_name: msgCtx.from.first_name || 'TGUser',
-                        last_name: msgCtx.from.last_name || userId.toString(),
-                        email: email,
-                    },
-                    // IntaSend metadata is a custom object you can send
-                    metadata: { user_id: userId, plan: plan },
-                    // CRITICAL: IntaSend uses a dedicated Webhook for status updates,
-                    // but we still provide a Redirect URL for the user after payment.
-                    redirect_url: `${SERVER_URL}/intasend/callback`,
-                },
-                { 
-                    headers: { 
-                        // IntaSend Authentication Fix (Trimming Key)
-                        'Authorization': `Bearer ${INTASEND_SECRET_KEY.trim()}`,
-                        'Content-Type': 'application/json' 
-                    } 
-                }
-            );
-
-            // IntaSend Payment Link API returns a direct URL for the checkout page
-            const payUrl = res.data.url;
-            
-            if (!payUrl) {
-                console.error("IntaSend init error: No payment URL returned.", res.data);
-                await msgCtx.reply("❌ Failed to initialize payment. No URL found.");
-            } else {
-                await msgCtx.reply(`💳 Complete your payment for *${currency} ${amount.toFixed(2)}* here:`, {
-                    reply_markup: Markup.inlineKeyboard([
-                        [Markup.button.url('Pay Now', payUrl)]
-                    ]).reply_markup,
-                    parse_mode: 'Markdown'
-                });
-            }
-        } catch (err) {
-            // If IntaSend call fails (e.g., authentication error)
-            console.error("IntaSend init error:", err.response?.data || err.message);
-            await msgCtx.reply("❌ Failed to initialize payment. Please try again or contact support.");
-        }
-    }); 
 });
+
+
+// --- STEP 2: PROCESS USER-ENTERED EMAIL (State handler) ---
+bot.on('text', async (ctx) => {
+    const userId = ctx.from.id;
+    
+    // Check if this user is currently in the email entry state
+    if (!userState.has(userId)) {
+        // If the user isn't waiting for an email, silently ignore or return a default message
+        return; 
+    }
+
+    // Get the plan from the temporary state map
+    const plan = userState.get(userId);
+    userState.delete(userId); // CRITICAL: Clear the state immediately after getting the plan
+
+    const email = ctx.message.text.trim();
+    
+    // 1. Validate input
+    if (!email.includes("@")) {
+        // Since we cleared the state, the user must restart the process
+        return ctx.reply("❌ That doesn't look like a valid email. Please click a plan button again to restart the payment process.");
+    }
+    
+    // --- Payment Logic Starts Here ---
+    const amount =
+        plan === "kes_1m"
+            ? 299.00
+            : plan === "kes_12m"
+            ? 2999.00
+            : plan === "usd_1m"
+            ? 2.30
+            : 23.00;
+    const currency = plan.startsWith("kes") ? "KES" : "USD";
+    const unique_ref = `${userId}_${Date.now()}`;
+
+    try {
+        const res = await axios.post(
+            `${INTASEND_API_BASE}/checkout/`,
+            {
+                public_key: INTASEND_PUBLISHABLE_KEY,
+                amount: amount,
+                currency: currency,
+                api_ref: unique_ref, // Use as the payment reference
+                customer: {
+                    first_name: ctx.from.first_name || 'TGUser',
+                    last_name: ctx.from.last_name || userId.toString(),
+                    email: email,
+                },
+                metadata: { user_id: userId, plan: plan },
+                redirect_url: `${SERVER_URL}/intasend/callback`,
+            },
+            { 
+                headers: { 
+                    // IntaSend Authentication Fix (Trimming Key)
+                    'Authorization': `Bearer ${INTASEND_SECRET_KEY.trim()}`,
+                    'Content-Type': 'application/json' 
+                } 
+            }
+        );
+
+        const payUrl = res.data.url;
+        
+        if (!payUrl) {
+            console.error("IntaSend init error: No payment URL returned.", res.data);
+            await ctx.reply("❌ Failed to initialize payment. No URL found.");
+        } else {
+            await ctx.reply(`💳 Complete your payment for *${currency} ${amount.toFixed(2)}* here:`, {
+                reply_markup: Markup.inlineKeyboard([
+                    [Markup.button.url('Pay Now', payUrl)]
+                ]).reply_markup,
+                parse_mode: 'Markdown'
+            });
+        }
+    } catch (err) {
+        // IntaSend Authentication Failure (Needs ENV fix)
+        const authError = err.response?.data?.errors?.find(e => e.code === 'authentication_failed');
+        if (authError) {
+             console.error("IntaSend init error: Authentication Failed (Session Expired). Check Secret Key.");
+             await ctx.reply("❌ Payment initiation failed due to an internal error. Please ensure your Secret Key is correct and active, then try again.");
+        } else {
+            console.error("IntaSend init error:", err.response?.data || err.message);
+            await ctx.reply("❌ Failed to initialize payment. Please try again or contact support.");
+        }
+    }
+});
+
 
 // --- CHECK STATUS ---
 bot.action("check_status", async (ctx) => {
@@ -305,7 +320,7 @@ app.post("/intasend/webhook", async (req, res) => {
 
     // IntaSend sends a 'state' field which should be 'COMPLETE' for a success
     if (event.state === 'COMPLETE') {
-        const { state, tracking_id, metadata, amount, currency, api_ref } = event;
+        const { tracking_id, metadata, amount, api_ref } = event;
         const telegram_id = metadata?.user_id;
         const plan = metadata?.plan;
         
