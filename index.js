@@ -19,8 +19,7 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// FIX 2: Declare a map globally to track active text input handlers for users
-const userHandlerMap = {}; 
+// Note: userHandlerMap removed as it is not the correct cleanup pattern for your Telegraf version.
 
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup";
@@ -191,13 +190,15 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
 
     await ctx.reply("📧 Please enter your email address for payment:");
 
+    // FIX 2: Declare stopListening locally to capture the cleanup function
+    let stopListening; 
+
     const handler = async (msgCtx) => {
         if (msgCtx.from.id !== userId) return;
 
-        // FIX 2: Cleanup: Immediately remove the listener for this user
-        if (userHandlerMap[userId]) {
-            bot.on.removeListener('text', userHandlerMap[userId]); 
-            delete userHandlerMap[userId];
+        // FIX 2: Call the cleanup function returned by bot.on
+        if (stopListening) {
+            stopListening(); 
         }
 
         const email = msgCtx.message.text.trim();
@@ -265,14 +266,10 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
             console.error("IntaSend init error:", err.response?.data || err.message);
             await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
         }
-
-        // The previous call to stopListening() is removed as it caused the TypeError.
-        // The cleanup logic is now handled correctly at the start of the handler.
     };
 
-    // FIX 2: Register the listener and store the function in the map.
-    userHandlerMap[userId] = handler;
-    bot.on("text", handler);
+    // FIX 2: Assign the cleanup function returned by bot.on to stopListening
+    stopListening = bot.on("text", handler); 
 });
 
 // --- CHECK STATUS ---
