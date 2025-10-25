@@ -19,6 +19,9 @@ const supabase = createClient(
     process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// FIX 2: Declare a map globally to track active text input handlers for users
+const userHandlerMap = {}; 
+
 // Replace with your group/channel username or numeric ID
 const PREMIUM_GROUP = "@FabadelPremiumGroup";
 // The static invite link to be used for all successful payments
@@ -191,6 +194,12 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
     const handler = async (msgCtx) => {
         if (msgCtx.from.id !== userId) return;
 
+        // FIX 2: Cleanup: Immediately remove the listener for this user
+        if (userHandlerMap[userId]) {
+            bot.on.removeListener('text', userHandlerMap[userId]); 
+            delete userHandlerMap[userId];
+        }
+
         const email = msgCtx.message.text.trim();
         if (!email.includes("@")) return msgCtx.reply("❌ Please provide a valid email address.");
 
@@ -231,7 +240,8 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
                 },
                 { 
                     headers: { 
-                        'Authorization': `Bearer ${INTASEND_SECRET_KEY}`,
+                        // FIX 1: Trim the secret key to prevent header invalid character error
+                        'Authorization': `Bearer ${INTASEND_SECRET_KEY.trim()}`,
                         'Content-Type': 'application/json' 
                     } 
                 }
@@ -256,12 +266,13 @@ bot.action(/(kes|usd)_(1m|12m)/, async (ctx) => {
             await msgCtx.reply("❌ Failed to initialize payment. Please try again.");
         }
 
-        // FIX FOR TYPEERROR: CALL THE UNLISTEN FUNCTION
-        stopListening();
+        // The previous call to stopListening() is removed as it caused the TypeError.
+        // The cleanup logic is now handled correctly at the start of the handler.
     };
 
-    // CAPTURE THE UNLISTEN FUNCTION RETURNED BY bot.on
-    const stopListening = bot.on("text", handler);
+    // FIX 2: Register the listener and store the function in the map.
+    userHandlerMap[userId] = handler;
+    bot.on("text", handler);
 });
 
 // --- CHECK STATUS ---
