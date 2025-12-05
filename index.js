@@ -1,4 +1,4 @@
-// /index.js — Fabadel Premium Bot (New UX/Design + IntaSend & Supabase)
+// /index.js — Fabadel Premium Bot (Final Fixed Version)
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
@@ -7,24 +7,28 @@ import IntaSend from "intasend-node";
 
 dotenv.config();
 
-// ---------- Config ----------
-const PORT = process.env.PORT || 10000;
-const SERVER_URL = process.env.SERVER_URL || "https://YOUR_RENDER_URL";
+const app = express();
+app.use(express.json());
+
+const SERVER_URL = process.env.SERVER_URL || null;
 const BANNER_URL = process.env.BANNER_URL || (SERVER_URL ? `${SERVER_URL}/assets/banner.png` : null);
 
+// --- Initialize Bot ---
 const bot = new Telegraf(process.env.BOT_TOKEN);
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
-const intasend = new IntaSend(
-  process.env.INTASEND_PUBLISHABLE_KEY,
-  process.env.INTASEND_SECRET_KEY,
-  true // sandbox mode
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 const userState = new Map();
 const VIP_GROUP_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
-const app = express();
-app.use(express.json());
+// --- IntaSend Config ---
+const intasend = new IntaSend(
+  process.env.INTASEND_PUBLISHABLE_KEY,
+  process.env.INTASEND_SECRET_KEY,
+  true // sandbox mode
+);
 
 // ---------- Keyboards ----------
 function mainMenuKeyboard() {
@@ -56,14 +60,19 @@ function plansKeyboard() {
 // ---------- START ----------
 bot.start(async (ctx) => {
   const firstName = ctx.from?.first_name || "there";
-  const caption = `🖼️ Welcome to *Fabadel Premium*, ${firstName}!\n
-✨ Your gateway to exclusive:
-🔥 High-paying job opportunities
-📚 Premium skill-learning resources
-🚀 Career growth & mentorship
-💼 Curated opportunities across Africa & globally
+  const caption = `✨Welcome to Fabadel Premium, ${firstName}!
 
-💡 Start your premium journey by choosing an option below:`;
+This is the executive floor of career growth. You've gained exclusive entry to a highly curated hub for ambitious professionals:
+
+💎 Hand-Picked Opportunities: Vetted, high-paying jobs spanning leading roles across Africa and the global market.
+
+📚 Elite Skill Resources: Access tools and premium learning modules reserved for top-tier performers.
+
+🤝 Insider Mentorship: Connect directly with mentors and a supportive community for truly unparalleled growth and networking.
+
+Your elite path starts now.
+
+Choose where to begin:`;
 
   try {
     if (BANNER_URL) {
@@ -90,9 +99,7 @@ bot.action("what_you_get", async (ctx) => {
 🔹 One-on-one career mentorship  
 🔹 Weekly premium resources  
 🔹 AI-powered tools for applications  
-🔹 Invite to private Telegram community
-
-Start unlocking your potential today!`;
+🔹 Invite to private Telegram community`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   await ctx.reply(content, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
@@ -104,18 +111,15 @@ bot.action("success_stories", async (ctx) => {
 
 • *Aisha* — Landed a remote dev role in 2 weeks  
 • *John* — Doubled interview invites after using our CV templates  
-• *Grace* — Promoted after career coaching
-
-🎉 Your success story could be next!`;
+• *Grace* — Promoted after career coaching`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   await ctx.reply(stories, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
 });
 
-// ---------- Back to Menu ----------
 bot.action("back_to_menu", async (ctx) => {
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply("🔙 Back to the main menu:", { parse_mode: "Markdown", ...mainMenuKeyboard() });
+  await ctx.reply("Back to the main menu:", { parse_mode: "Markdown", ...mainMenuKeyboard() });
 });
 
 // ---------- Explore Plans ----------
@@ -123,7 +127,6 @@ bot.action("explore_plans", async (ctx) => {
   const content = `💳 *Fabadel Premium Plans*
 
 Choose a plan that fits your goals 🔥`;
-
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   await ctx.reply(content, { parse_mode: "Markdown", ...plansKeyboard() });
 });
@@ -142,7 +145,7 @@ bot.action(/select:(.+)/, async (ctx) => {
   if (!plan) return ctx.reply("❌ Unknown plan.");
 
   userState.set(ctx.from.id, { step: "awaiting_email", plan });
-  await ctx.reply(`📧 Great choice!\n\nPlease enter your email address to generate your VIP payment link.`, { parse_mode: "Markdown" });
+  await ctx.reply(`📧 Great choice!\n\nTo continue, please enter your email address so we can create your VIP payment link.`, { parse_mode: "Markdown" });
 });
 
 // ---------- Cancel Command ----------
@@ -166,17 +169,16 @@ bot.on("text", async (ctx) => {
 
   const plan = state.plan;
   try {
-    // Correct IntaSend checkout call
     const checkout = await intasend.collection({
       amount: plan.amount,
       currency: plan.currency,
       api_ref: `${userId}_${Date.now()}`,
       customer: { email },
       metadata: { user_id: userId, plan: plan.id },
-      redirect_url: `${SERVER_URL}/intasend/callback`
+      redirect_url: SERVER_URL ? `${SERVER_URL}/intasend/callback` : null
     });
 
-    await ctx.reply("💵 You're almost there! Click below to securely complete your payment.", {
+    await ctx.reply("💵 You're almost there! Click the button below to securely complete your payment.", {
       reply_markup: Markup.inlineKeyboard([
         [Markup.button.url("🟦 Pay Now", checkout.url)],
         [Markup.button.callback("🔙 Main Menu", "back_to_menu")]
@@ -199,11 +201,9 @@ bot.action("check_status", async (ctx) => {
     .single();
 
   if (error || !data) {
-    return ctx.reply("❌ No active subscription found. Tap below to view plans.", {
-      reply_markup: Markup.inlineKeyboard([
-        [Markup.button.callback("⭐ View Plans", "explore_plans")]
-      ]).reply_markup
-    });
+    return ctx.reply("❌ No active subscription found. Tap below to view plans.", { reply_markup: Markup.inlineKeyboard([
+      [Markup.button.callback("⭐ View Plans", "explore_plans")]
+    ]).reply_markup });
   }
 
   const statusMsg = `📊 *Subscription Status*\n\nStatus: ${data.status.toUpperCase()}\nExpiry: ${data.expiry_date || "N/A"}\n\n🔥 Thank you for being a Premium Member!`;
@@ -211,18 +211,18 @@ bot.action("check_status", async (ctx) => {
   await ctx.reply(statusMsg, { parse_mode: "Markdown" });
 });
 
-// ---------- Express ----------
-// Simple health check
+// ---------- Express Health Check ----------
 app.get("/", (req, res) => res.send("Fabadel Premium Bot is running!"));
 
-// ---------- Launch Bot ----------
+// ---------- Start Server & Bot ----------
+const PORT = process.env.PORT || 10000;
+
 app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
 
   try {
-    // Polling mode avoids port conflicts on Render
-    await bot.launch({ webhook: false });
-    console.log("Bot launched in polling mode.");
+    await bot.launch({ webhook: false }); // Polling mode
+    console.log("Bot launched successfully in polling mode!");
   } catch (err) {
     console.error("Bot launch failed:", err);
   }
