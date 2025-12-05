@@ -1,4 +1,4 @@
-// /index.js — Fabadel Premium Bot (Final Fixed + VIP Invite)
+// /index.js — Fabadel Premium Bot (Final, Fixed & UX Updated)
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
@@ -60,15 +60,15 @@ function plansKeyboard() {
 // ---------- START ----------
 bot.start(async (ctx) => {
   const firstName = ctx.from?.first_name || "there";
-  const caption = `✨ Welcome to Fabadel Premium, ${firstName}!
+  const caption = `✨ Welcome to *Fabadel Premium*, ${firstName}!
 
-This is your gateway to elite career growth and high-paying opportunities:
+This is your gateway to exclusive career growth:
 
-💎 Hand-Picked Jobs: Vetted opportunities across Africa & globally.
-📚 Premium Skill Resources: Exclusive learning modules.
-🤝 Insider Mentorship: Connect with mentors & private community.
+💎 Hand-Picked Opportunities: Vetted, high-paying jobs across Africa & globally.
+📚 Elite Skill Resources: Premium learning modules & AI-powered tools.
+🤝 Insider Mentorship: Connect with mentors & a supportive community.
 
-Your elite path starts now. Choose where to begin:`;
+Choose where to begin:`;
 
   try {
     if (BANNER_URL) {
@@ -90,12 +90,12 @@ Your elite path starts now. Choose where to begin:`;
 bot.action("what_you_get", async (ctx) => {
   const content = `💎 *What's Inside Fabadel Premium*
 
-🔹 Exclusive job drops (daily)  
-🔹 CV templates that convert  
+🔹 Exclusive job drops (updated daily)  
+🔹 Insider CV templates  
 🔹 One-on-one mentorship  
 🔹 Weekly premium resources  
-🔹 AI-powered application tools  
-🔹 Private Telegram community invite`;
+🔹 AI-powered career tools  
+🔹 Invite to private Telegram community`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   await ctx.reply(content, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
@@ -141,7 +141,7 @@ bot.action(/select:(.+)/, async (ctx) => {
   if (!plan) return ctx.reply("❌ Unknown plan.");
 
   userState.set(ctx.from.id, { step: "awaiting_email", plan });
-  await ctx.reply(`📧 Great choice!\n\nTo continue, please enter your email address so we can create your VIP payment link.`, { parse_mode: "Markdown" });
+  await ctx.reply(`📧 Great choice!\n\nPlease enter your email address so we can create your VIP payment link.`, { parse_mode: "Markdown" });
 });
 
 // ---------- Cancel Command ----------
@@ -180,12 +180,6 @@ bot.on("text", async (ctx) => {
         [Markup.button.callback("🔙 Main Menu", "back_to_menu")]
       ]).reply_markup
     });
-
-    // Optional: You could send VIP invite after confirming payment via webhook
-    // For now, we can remind user to join after payment
-    await ctx.reply(`🎁 After completing your payment, join the exclusive VIP group here:  
-👉 ${VIP_GROUP_LINK}`, { parse_mode: "Markdown" });
-
   } catch (err) {
     console.error("IntaSend error:", err);
     await ctx.reply("⚠️ Payment creation failed. Please try again later.", { parse_mode: "Markdown" });
@@ -208,15 +202,7 @@ bot.action("check_status", async (ctx) => {
     ]).reply_markup });
   }
 
-  const statusMsg = `📊 *Subscription Status*
-
-Status: ${data.status.toUpperCase()}
-Expiry: ${data.expiry_date || "N/A"}
-
-🎁 Join your VIP group:  
-👉 ${VIP_GROUP_LINK}
-
-🔥 Thank you for being a Premium Member!`;
+  const statusMsg = `📊 *Subscription Status*\n\nStatus: ${data.status.toUpperCase()}\nExpiry: ${data.expiry_date || "N/A"}\n\n🔥 Thank you for being a Premium Member!\n\n🎁 Join your exclusive VIP group:\n${VIP_GROUP_LINK}`;
 
   await ctx.reply(statusMsg, { parse_mode: "Markdown" });
 });
@@ -231,7 +217,7 @@ app.listen(PORT, async () => {
   console.log(`Server listening on port ${PORT}`);
 
   try {
-    await bot.launch({ webhook: false }); // Polling mode
+    await bot.launch(); // Polling mode
     console.log("Bot launched successfully in polling mode!");
   } catch (err) {
     console.error("Bot launch failed:", err);
