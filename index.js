@@ -168,7 +168,7 @@ bot.on("text", async (ctx) => {
     const checkout = await intasend.collection({
       amount: plan.amount,
       first_name: ctx.from.first_name || "Telegram",
-      last_name: ctx.from.last_name || "User"
+      last_name: ctx.from.last_name || "User",
       currency: plan.currency,
       api_ref: `${userId}_${Date.now()}`,
       customer: { email },
