@@ -1,4 +1,4 @@
-// /index.js — Fabadel Premium Bot (Final Fixed Version)
+// /index.js — Fabadel Premium Bot (Final Fixed + VIP Invite)
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
@@ -60,19 +60,15 @@ function plansKeyboard() {
 // ---------- START ----------
 bot.start(async (ctx) => {
   const firstName = ctx.from?.first_name || "there";
-  const caption = `✨Welcome to Fabadel Premium, ${firstName}!
+  const caption = `✨ Welcome to Fabadel Premium, ${firstName}!
 
-This is the executive floor of career growth. You've gained exclusive entry to a highly curated hub for ambitious professionals:
+This is your gateway to elite career growth and high-paying opportunities:
 
-💎 Hand-Picked Opportunities: Vetted, high-paying jobs spanning leading roles across Africa and the global market.
+💎 Hand-Picked Jobs: Vetted opportunities across Africa & globally.
+📚 Premium Skill Resources: Exclusive learning modules.
+🤝 Insider Mentorship: Connect with mentors & private community.
 
-📚 Elite Skill Resources: Access tools and premium learning modules reserved for top-tier performers.
-
-🤝 Insider Mentorship: Connect directly with mentors and a supportive community for truly unparalleled growth and networking.
-
-Your elite path starts now.
-
-Choose where to begin:`;
+Your elite path starts now. Choose where to begin:`;
 
   try {
     if (BANNER_URL) {
@@ -94,12 +90,12 @@ Choose where to begin:`;
 bot.action("what_you_get", async (ctx) => {
   const content = `💎 *What's Inside Fabadel Premium*
 
-🔹 Access to exclusive job drops (updated daily)  
-🔹 Insider CV templates that actually convert  
-🔹 One-on-one career mentorship  
+🔹 Exclusive job drops (daily)  
+🔹 CV templates that convert  
+🔹 One-on-one mentorship  
 🔹 Weekly premium resources  
-🔹 AI-powered tools for applications  
-🔹 Invite to private Telegram community`;
+🔹 AI-powered application tools  
+🔹 Private Telegram community invite`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
   await ctx.reply(content, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
@@ -184,6 +180,12 @@ bot.on("text", async (ctx) => {
         [Markup.button.callback("🔙 Main Menu", "back_to_menu")]
       ]).reply_markup
     });
+
+    // Optional: You could send VIP invite after confirming payment via webhook
+    // For now, we can remind user to join after payment
+    await ctx.reply(`🎁 After completing your payment, join the exclusive VIP group here:  
+👉 ${VIP_GROUP_LINK}`, { parse_mode: "Markdown" });
+
   } catch (err) {
     console.error("IntaSend error:", err);
     await ctx.reply("⚠️ Payment creation failed. Please try again later.", { parse_mode: "Markdown" });
@@ -206,7 +208,15 @@ bot.action("check_status", async (ctx) => {
     ]).reply_markup });
   }
 
-  const statusMsg = `📊 *Subscription Status*\n\nStatus: ${data.status.toUpperCase()}\nExpiry: ${data.expiry_date || "N/A"}\n\n🔥 Thank you for being a Premium Member!`;
+  const statusMsg = `📊 *Subscription Status*
+
+Status: ${data.status.toUpperCase()}
+Expiry: ${data.expiry_date || "N/A"}
+
+🎁 Join your VIP group:  
+👉 ${VIP_GROUP_LINK}
+
+🔥 Thank you for being a Premium Member!`;
 
   await ctx.reply(statusMsg, { parse_mode: "Markdown" });
 });
