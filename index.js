@@ -210,9 +210,29 @@ bot.action("check_status", async (ctx) => {
 // ---------- Express & Webhook ----------
 app.get("/", (req, res) => res.send("Fabadel Premium Bot is running!"));
 
+// Use Render's assigned port
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
 
-bot.launch({
-  webhook: false
+// Webhook path for your bot
+const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
+const SERVER_URL = process.env.SERVER_URL || "https://YOUR_RENDER_URL";
+
+// Tell Express to handle incoming webhook updates
+app.use(bot.webhookCallback(WEBHOOK_PATH));
+
+// Start Express server
+app.listen(PORT, async () => {
+  console.log(`Server listening on port ${PORT}`);
+
+  // Launch bot using webhook
+  await bot.launch({
+    webhook: {
+      domain: SERVER_URL,  // e.g. https://fabadel-premium-bot.onrender.com
+      port: PORT,
+      hookPath: WEBHOOK_PATH
+    }
+  });
+
+  console.log("Bot launched with webhook!");
 });
+
