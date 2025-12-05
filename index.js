@@ -167,6 +167,8 @@ bot.on("text", async (ctx) => {
   try {
     const checkout = await intasend.collection({
       amount: plan.amount,
+      first_name: ctx.from.first_name || "Telegram",
+      last_name: ctx.from.last_name || "User"
       currency: plan.currency,
       api_ref: `${userId}_${Date.now()}`,
       customer: { email },
@@ -181,9 +183,10 @@ bot.on("text", async (ctx) => {
       ]).reply_markup
     });
   } catch (err) {
-    console.error("IntaSend error:", err);
-    await ctx.reply("⚠️ Payment creation failed. Please try again later.", { parse_mode: "Markdown" });
-  }
+    // This will print the official IntaSend API response to your server console.
+    console.error("IntaSend error:", JSON.stringify(err, Object.getOwnPropertyNames(err), 2)); 
+    await ctx.reply("⚠️ Payment creation failed. Please try again later. (Error logged)", { parse_mode: "Markdown" });
+ }
 });
 
 // ---------- Check Subscription ----------
