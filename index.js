@@ -167,7 +167,7 @@ bot.on("text", async (ctx) => {
   const plan = state.plan;
   try {
     // Correct IntaSend checkout call
-    const checkout = await intasend.collection.createCheckout({
+    const checkout = await intasend.collection({
       amount: plan.amount,
       currency: plan.currency,
       api_ref: `${userId}_${Date.now()}`,
