@@ -1,12 +1,10 @@
-// /index.js - Cloud Run-ready with upgraded Premium UX + IntaSend SDK
+// /index.js — Fabadel Premium Bot (New UX/Design + IntaSend & Supabase)
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
-import axios from "axios";
-import http from "http";
-import fs from "fs";
 import path from "path";
+import fs from "fs";
 import IntaSend from "intasend-node";
 
 dotenv.config();
@@ -14,10 +12,10 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Serve static assets if present (for banner image)
-const assetsDir = path.join(process.cwd(), "assets");
-if (fs.existsSync(assetsDir)) app.use("/assets", express.static(assetsDir));
+const SERVER_URL = process.env.SERVER_URL;
+const BANNER_URL = process.env.BANNER_URL || (SERVER_URL ? `${SERVER_URL}/assets/banner.png` : null);
 
+// --- Initialize Bot ---
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -25,44 +23,50 @@ const supabase = createClient(
 );
 
 const userState = new Map();
-const PREMIUM_GROUP = "@FabadelPremiumGroup";
-const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
+const VIP_GROUP_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
-const SERVER_URL = process.env.SERVER_URL;
-const BANNER_URL = process.env.BANNER_URL || (SERVER_URL ? `${SERVER_URL}/assets/banner.png` : null);
-
-// --- INTASEND SDK CONFIG ---
-const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY;
-const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY;
-const INTASEND_WEBHOOK_SECRET = process.env.INTASEND_WEBHOOK_SECRET;
-
+// --- IntaSend Config ---
 const intasend = new IntaSend(
-  INTASEND_PUBLISHABLE_KEY,
-  INTASEND_SECRET_KEY,
-  true // sandbox: true | production: false
+  process.env.INTASEND_PUBLISHABLE_KEY,
+  process.env.INTASEND_SECRET_KEY,
+  true // sandbox mode
 );
 
-// ---------- Utility: main menu keyboard ----------
+// ---------- Keyboards ----------
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("✨ What You Get", "what_you_get")],
-    [Markup.button.callback("💳 Explore Plans", "explore_plans")],
-    [Markup.button.callback("📊 My Subscription", "check_status")],
+    [Markup.button.callback("💳 Explore Premium Plans", "explore_plans")],
+    [Markup.button.callback("📊 Check My Subscription", "check_status")],
+    [Markup.button.callback("🎁 What You Get", "what_you_get")],
     [Markup.button.callback("🎯 Success Stories", "success_stories")]
+  ]);
+}
+
+function whatYouGetKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("⭐ View Plans", "explore_plans")],
+    [Markup.button.callback("🔙 Back to Menu", "back_to_menu")]
+  ]);
+}
+
+function plansKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🇰🇪 KES 299 / Month", "select:kES_299_1m")],
+    [Markup.button.callback("💼 KES 2,999 / Year (Best Value)", "select:kES_2999_12m")],
+    [Markup.button.callback("🌎 USD 2.30 / Month", "select:USD_2_30_1m")],
+    [Markup.button.callback("🏆 USD 23.00 / Year", "select:USD_23_12m")],
+    [Markup.button.callback("🔙 Back", "back_to_menu")]
   ]);
 }
 
 // ---------- START ----------
 bot.start(async (ctx) => {
   const firstName = ctx.from?.first_name || "there";
-  const caption = `✨ Welcome to *Fabadel Premium*, ${firstName}!
-
-Your gateway to exclusive:
+  const caption = `✨ Welcome to *Fabadel Premium*, ${firstName}!\n\nYour gateway to exclusive:
 🔥 High-paying job opportunities
-📚 Premium learning resources
+📚 Premium skill-learning resources
 🚀 Career growth & mentorship
+💼 Curated opportunities across Africa & globally
 
 Choose where to begin:`;
 
@@ -74,76 +78,58 @@ Choose where to begin:`;
         reply_markup: mainMenuKeyboard().reply_markup
       });
     } else {
-      await ctx.reply(caption, mainMenuKeyboard());
+      await ctx.reply(caption, { parse_mode: "Markdown", ...mainMenuKeyboard() });
     }
   } catch (err) {
     console.error("Failed to send start banner:", err.message);
-    await ctx.reply(caption, mainMenuKeyboard());
+    await ctx.reply(caption, { parse_mode: "Markdown", ...mainMenuKeyboard() });
   }
 });
 
 // ---------- What You Get ----------
 bot.action("what_you_get", async (ctx) => {
-  const content = `💎 *What's inside Fabadel Premium*
+  const content = `💎 *What's Inside Fabadel Premium*
 
-🔹 Exclusive job drops (daily)
-🔹 High-converting CV templates
-🔹 One-on-one career mentorship
-🔹 Weekly premium resource packs
-🔹 AI tools for applications
-🔹 Invite to private community`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("⭐ View Plans", "explore_plans")],
-    [Markup.button.callback("🔙 Back", "back_to_menu")]
-  ]);
+🔹 Access to exclusive job drops (updated daily)  
+🔹 Insider CV templates that actually convert  
+🔹 One-on-one career mentorship  
+🔹 Weekly premium resources  
+🔹 AI-powered tools for applications  
+🔹 Invite to private Telegram community`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply(content, { parse_mode: "Markdown", ...keyboard });
+  await ctx.reply(content, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
 });
 
 // ---------- Success Stories ----------
 bot.action("success_stories", async (ctx) => {
   const stories = `📣 *Success Stories*
 
-• *Aisha* — Landed a remote dev role in 2 weeks.
-• *John* — Doubled interview invites after our CV template.
-• *Grace* — Promoted after interview coaching.`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("⭐ View Plans", "explore_plans")],
-    [Markup.button.callback("🔙 Back", "back_to_menu")]
-  ]);
+• *Aisha* — Landed a remote dev role in 2 weeks  
+• *John* — Doubled interview invites after using our CV templates  
+• *Grace* — Promoted after career coaching`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply(stories, { parse_mode: "Markdown", ...keyboard });
+  await ctx.reply(stories, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
 });
 
 bot.action("back_to_menu", async (ctx) => {
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply("Back to the main menu:", mainMenuKeyboard());
+  await ctx.reply("Back to the main menu:", { parse_mode: "Markdown", ...mainMenuKeyboard() });
 });
 
 // ---------- Explore Plans ----------
 bot.action("explore_plans", async (ctx) => {
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("🇰🇪 KES 299 / Month", "select:kES_299_1m")],
-    [Markup.button.callback("🇰🇪 KES 2,999 / Year", "select:kES_2999_12m")],
-    [Markup.button.callback("🌍 USD 2.30 / Month", "select:USD_2_30_1m")],
-    [Markup.button.callback("🌍 USD 23.00 / Year", "select:USD_23_12m")],
-    [Markup.button.callback("🔙 Back", "back_to_menu")]
-  ]);
+  const content = `💳 *Fabadel Premium Plans*
 
+Choose a plan that fits your goals 🔥`;
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply(`💳 *Fabadel Premium Plans*
-
-Choose a plan:`, { parse_mode: "Markdown", ...keyboard });
+  await ctx.reply(content, { parse_mode: "Markdown", ...plansKeyboard() });
 });
 
-// ---------- Plan selection ----------
+// ---------- Plan Selection ----------
 bot.action(/select:(.+)/, async (ctx) => {
   const raw = ctx.match[1];
-
   const map = {
     "kES_299_1m": { id: "kes_1m", label: "KES 299 / Month", amount: 299, currency: "KES" },
     "kES_2999_12m": { id: "kes_12m", label: "KES 2,999 / Year", amount: 2999, currency: "KES" },
@@ -154,31 +140,17 @@ bot.action(/select:(.+)/, async (ctx) => {
   const plan = map[raw];
   if (!plan) return ctx.reply("❌ Unknown plan.");
 
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("✅ Confirm & Pay", `confirm:${plan.id}`)],
-    [Markup.button.callback("🔙 Choose Another", "explore_plans")],
-    [Markup.button.callback("🏠 Main Menu", "back_to_menu")]
-  ]);
-
-  await ctx.reply(`You selected *${plan.label}*
-
-Tap Confirm & Pay to continue.`, { parse_mode: "Markdown", ...keyboard });
+  userState.set(ctx.from.id, { step: "awaiting_email", plan });
+  await ctx.reply(`📧 Great choice!\n\nTo continue, please enter your email address so we can create your VIP payment link.`, { parse_mode: "Markdown" });
 });
 
-// ---------- Confirm → ask email ----------
-bot.action(/confirm:(.+)/, async (ctx) => {
-  const planId = ctx.match[1];
-  userState.set(ctx.from.id, { step: "awaiting_email", plan: planId });
-  await ctx.reply(`📧 Enter your email to generate your payment link.
-/send /cancel any time.`);
-});
-
+// ---------- Cancel Command ----------
 bot.command("cancel", (ctx) => {
   userState.delete(ctx.from.id);
-  ctx.reply("❌ Cancelled.", mainMenuKeyboard());
+  ctx.reply("❌ Cancelled.", { parse_mode: "Markdown", ...mainMenuKeyboard() });
 });
 
-// ---------- Handle email → create checkout ----------
+// ---------- Handle Email & Create Payment ----------
 bot.on("text", async (ctx) => {
   const userId = ctx.from.id;
   if (!userState.has(userId)) return;
@@ -192,40 +164,55 @@ bot.on("text", async (ctx) => {
   userState.delete(userId);
 
   const plan = state.plan;
-  const amount = plan === "kes_1m" ? 299 : plan === "kes_12m" ? 2999 : plan === "usd_1m" ? 2.3 : 23;
-  const currency = plan.startsWith("kes") ? "KES" : "USD";
-  const unique_ref = `${userId}_${Date.now()}`;
-
   try {
-    const checkout = await intasend.collection.createCheckout({
-      amount,
-      currency,
-      api_ref: unique_ref,
+    const checkout = intasend.collection.checkout({
+      amount: plan.amount,
+      currency: plan.currency,
+      api_ref: `${userId}_${Date.now()}`,
       customer: { email },
-      metadata: { user_id: userId, plan },
+      metadata: { user_id: userId, plan: plan.id },
       redirect_url: `${SERVER_URL}/intasend/callback`
     });
 
-    const payUrl = checkout.url;
-    if (!payUrl) return ctx.reply("❌ Payment link creation failed.");
-
-    await ctx.reply("💳 Tap below to pay:", {
+    await ctx.reply("💵 You're almost there! Click the button below to securely complete your payment.", {
       reply_markup: Markup.inlineKeyboard([
-        [Markup.button.url("🟦 Pay Now", payUrl)],
+        [Markup.button.url("🟦 Pay Now", checkout.url)],
         [Markup.button.callback("🔙 Main Menu", "back_to_menu")]
       ]).reply_markup
     });
   } catch (err) {
     console.error("IntaSend error:", err);
-    await ctx.reply("❌ Payment initiation failed. Try again later.");
+    await ctx.reply("⚠️ Payment creation failed. Please try again later.", { parse_mode: "Markdown" });
   }
 });
 
-// ---------- Launch bot ----------
-bot.launch().then(() => console.log("Bot launched."));
+// ---------- Check Subscription ----------
+bot.action("check_status", async (ctx) => {
+  const userId = ctx.from.id;
 
-// ---------- Express fallback for health check ----------
-app.get("/", (req, res) => res.send("Bot is running."));
+  const { data, error } = await supabase
+    .from("subscriptions")
+    .select("*")
+    .eq("user_id", userId)
+    .single();
 
-const PORT = process.env.PORT || 3000;
+  if (error || !data) {
+    return ctx.reply("❌ No active subscription found. Tap below to view plans.", { reply_markup: Markup.inlineKeyboard([
+      [Markup.button.callback("⭐ View Plans", "explore_plans")]
+    ]).reply_markup });
+  }
+
+  const statusMsg = `📊 *Subscription Status*\n\nStatus: ${data.status.toUpperCase()}\nExpiry: ${data.expiry_date || "N/A"}\n\n🔥 Thank you for being a Premium Member!`;
+
+  await ctx.reply(statusMsg, { parse_mode: "Markdown" });
+});
+
+// ---------- Express & Webhook ----------
+app.get("/", (req, res) => res.send("Fabadel Premium Bot is running!"));
+
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+
+bot.launch({
+  webhook: false
+});
