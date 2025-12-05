@@ -197,7 +197,7 @@ bot.on("text", async (ctx) => {
   const unique_ref = `${userId}_${Date.now()}`;
 
   try {
-    const checkout = await intasend.collection().checkout({
+    const checkout = await intasend.collection.createCheckout({
       amount,
       currency,
       api_ref: unique_ref,
