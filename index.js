@@ -86,19 +86,12 @@ Choose where to begin:`;
 bot.action("what_you_get", async (ctx) => {
   const content = `💎 *What's inside Fabadel Premium*
 
-` +
-    `🔹 Exclusive job drops (daily)
-` +
-    `🔹 High-converting CV templates
-` +
-    `🔹 One-on-one career mentorship
-` +
-    `🔹 Weekly premium resource packs
-` +
-    `🔹 AI tools for applications
-` +
-    `🔹 Invite to private community
-`;
+🔹 Exclusive job drops (daily)
+🔹 High-converting CV templates
+🔹 One-on-one career mentorship
+🔹 Weekly premium resource packs
+🔹 AI tools for applications
+🔹 Invite to private community`;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback("⭐ View Plans", "explore_plans")],
@@ -113,12 +106,9 @@ bot.action("what_you_get", async (ctx) => {
 bot.action("success_stories", async (ctx) => {
   const stories = `📣 *Success Stories*
 
-` +
-    `• *Aisha* — Landed a remote dev role in 2 weeks.
-` +
-    `• *John* — Doubled interview invites after our CV template.
-` +
-    `• *Grace* — Promoted after interview coaching.`;
+• *Aisha* — Landed a remote dev role in 2 weeks.
+• *John* — Doubled interview invites after our CV template.
+• *Grace* — Promoted after interview coaching.`;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback("⭐ View Plans", "explore_plans")],
@@ -145,9 +135,9 @@ bot.action("explore_plans", async (ctx) => {
   ]);
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply("💳 *Fabadel Premium Plans*
+  await ctx.reply(`💳 *Fabadel Premium Plans*
 
-Choose a plan:", { parse_mode: "Markdown", ...keyboard });
+Choose a plan:`, { parse_mode: "Markdown", ...keyboard });
 });
 
 // ---------- Plan selection ----------
@@ -179,8 +169,8 @@ Tap Confirm & Pay to continue.`, { parse_mode: "Markdown", ...keyboard });
 bot.action(/confirm:(.+)/, async (ctx) => {
   const planId = ctx.match[1];
   userState.set(ctx.from.id, { step: "awaiting_email", plan: planId });
-  await ctx.reply("📧 Enter your email to generate your payment link.
-/send /cancel any time.");
+  await ctx.reply(`📧 Enter your email to generate your payment link.
+/send /cancel any time.`);
 });
 
 bot.command("cancel", (ctx) => {
@@ -227,3 +217,15 @@ bot.on("text", async (ctx) => {
     });
   } catch (err) {
     console.error("IntaSend error:", err);
+    await ctx.reply("❌ Payment initiation failed. Try again later.");
+  }
+});
+
+// ---------- Launch bot ----------
+bot.launch().then(() => console.log("Bot launched."));
+
+// ---------- Express fallback for health check ----------
+app.get("/", (req, res) => res.send("Bot is running."));
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
