@@ -165,16 +165,18 @@ bot.on("text", async (ctx) => {
 
   const plan = state.plan;
   try {
-    const checkout = await intasend.collection({
+    const checkout = await intasend.collection.createCheckout({
       amount: plan.amount,
-      first_name: ctx.from.first_name || "Telegram",
-      last_name: ctx.from.last_name || "User",
       currency: plan.currency,
+      first_name: ctx.from.first_name || "Telegram",
+      last_name: ctx.from.last_name || "User",
       api_ref: `${userId}_${Date.now()}`,
       customer: { email },
       metadata: { user_id: userId, plan: plan.id },
       redirect_url: SERVER_URL ? `${SERVER_URL}/intasend/callback` : null
     });
+
+    if (!checkout || !checkout.url) throw new Error("IntaSend checkout URL missing");
 
     await ctx.reply("💵 You're almost there! Click the button below to securely complete your payment.", {
       reply_markup: Markup.inlineKeyboard([
@@ -182,11 +184,11 @@ bot.on("text", async (ctx) => {
         [Markup.button.callback("🔙 Main Menu", "back_to_menu")]
       ]).reply_markup
     });
+
   } catch (err) {
-    // This will print the official IntaSend API response to your server console.
-    console.error("IntaSend error:", JSON.stringify(err, Object.getOwnPropertyNames(err), 2)); 
+    console.error("IntaSend error:", err);
     await ctx.reply("⚠️ Payment creation failed. Please try again later. (Error logged)", { parse_mode: "Markdown" });
- }
+  }
 });
 
 // ---------- Check Subscription ----------
