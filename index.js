@@ -215,7 +215,6 @@ const PORT = process.env.PORT || 10000;
 
 // Webhook path for your bot
 const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
-const SERVER_URL = process.env.SERVER_URL || "https://YOUR_RENDER_URL";
 
 // Tell Express to handle incoming webhook updates
 app.use(bot.webhookCallback(WEBHOOK_PATH));
