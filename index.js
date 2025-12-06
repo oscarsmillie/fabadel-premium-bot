@@ -27,7 +27,7 @@ const VIP_GROUP_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 const intasend = new IntaSend(
   process.env.INTASEND_PUBLISHABLE_KEY,
   process.env.INTASEND_SECRET_KEY,
-  true // sandbox mode
+  false // live mode
 );
 
 // ---------- Keyboards ----------
