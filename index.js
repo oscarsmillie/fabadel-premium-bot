@@ -1,12 +1,8 @@
-// /index.js - Cloud Run-ready with upgraded Premium UX + IntaSend SDK
+// /index.js — Fabadel Premium Bot (Final, Fixed & UX Updated)
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
-import axios from "axios";
-import http from "http";
-import fs from "fs";
-import path from "path";
 import IntaSend from "intasend-node";
 
 dotenv.config();
@@ -14,10 +10,10 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Serve static assets if present (for banner image)
-const assetsDir = path.join(process.cwd(), "assets");
-if (fs.existsSync(assetsDir)) app.use("/assets", express.static(assetsDir));
+const SERVER_URL = process.env.SERVER_URL || null;
+const BANNER_URL = process.env.BANNER_URL || (SERVER_URL ? `${SERVER_URL}/assets/banner.png` : null);
 
+// --- Initialize Bot ---
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -25,32 +21,39 @@ const supabase = createClient(
 );
 
 const userState = new Map();
-const PREMIUM_GROUP = "@FabadelPremiumGroup";
-const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
+const VIP_GROUP_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
-const SERVER_URL = process.env.SERVER_URL;
-const BANNER_URL = process.env.BANNER_URL || (SERVER_URL ? `${SERVER_URL}/assets/banner.png` : null);
-
-// --- INTASEND SDK CONFIG ---
-const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY;
-const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY;
-const INTASEND_WEBHOOK_SECRET = process.env.INTASEND_WEBHOOK_SECRET;
-
+// --- IntaSend Config ---
 const intasend = new IntaSend(
-  INTASEND_PUBLISHABLE_KEY,
-  INTASEND_SECRET_KEY,
-  true // sandbox: true | production: false
+  process.env.INTASEND_PUBLISHABLE_KEY,
+  process.env.INTASEND_SECRET_KEY,
+  false // live mode
 );
 
-// ---------- Utility: main menu keyboard ----------
+// ---------- Keyboards ----------
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("✨ What You Get", "what_you_get")],
-    [Markup.button.callback("💳 Explore Plans", "explore_plans")],
-    [Markup.button.callback("📊 My Subscription", "check_status")],
+    [Markup.button.callback("💳 Explore Premium Plans", "explore_plans")],
+    [Markup.button.callback("📊 Check My Subscription", "check_status")],
+    [Markup.button.callback("🎁 What You Get", "what_you_get")],
     [Markup.button.callback("🎯 Success Stories", "success_stories")]
+  ]);
+}
+
+function whatYouGetKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("⭐ View Plans", "explore_plans")],
+    [Markup.button.callback("🔙 Back to Menu", "back_to_menu")]
+  ]);
+}
+
+function plansKeyboard() {
+  return Markup.inlineKeyboard([
+    [Markup.button.callback("🇰🇪 KES 299 / Month", "select:kES_299_1m")],
+    [Markup.button.callback("💼 KES 2,999 / Year (Best Value)", "select:kES_2999_12m")],
+    [Markup.button.callback("🌎 USD 2.30 / Month", "select:USD_2_30_1m")],
+    [Markup.button.callback("🏆 USD 23.00 / Year", "select:USD_23_12m")],
+    [Markup.button.callback("🔙 Back", "back_to_menu")]
   ]);
 }
 
@@ -59,10 +62,11 @@ bot.start(async (ctx) => {
   const firstName = ctx.from?.first_name || "there";
   const caption = `✨ Welcome to *Fabadel Premium*, ${firstName}!
 
-Your gateway to exclusive:
-🔥 High-paying job opportunities
-📚 Premium learning resources
-🚀 Career growth & mentorship
+This is your gateway to exclusive career growth:
+
+💎 Hand-Picked Opportunities: Vetted, high-paying jobs across Africa & globally.
+📚 Elite Skill Resources: Premium learning modules & AI-powered tools.
+🤝 Insider Mentorship: Connect with mentors & a supportive community.
 
 Choose where to begin:`;
 
@@ -74,32 +78,27 @@ Choose where to begin:`;
         reply_markup: mainMenuKeyboard().reply_markup
       });
     } else {
-      await ctx.reply(caption, mainMenuKeyboard());
+      await ctx.reply(caption, { parse_mode: "Markdown", ...mainMenuKeyboard() });
     }
   } catch (err) {
     console.error("Failed to send start banner:", err.message);
-    await ctx.reply(caption, mainMenuKeyboard());
+    await ctx.reply(caption, { parse_mode: "Markdown", ...mainMenuKeyboard() });
   }
 });
 
 // ---------- What You Get ----------
 bot.action("what_you_get", async (ctx) => {
-  const content = `💎 *What's inside Fabadel Premium*
+  const content = `💎 *What's Inside Fabadel Premium*
 
-🔹 Exclusive job drops (daily)
-🔹 High-converting CV templates
-🔹 One-on-one career mentorship
-🔹 Weekly premium resource packs
-🔹 AI tools for applications
-🔹 Invite to private community`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback("⭐ View Plans", "explore_plans")],
-    [Markup.button.callback("🔙 Back", "back_to_menu")]
-  ]);
+🔹 Exclusive job drops (updated daily)  
+🔹 Insider CV templates  
+🔹 One-on-one mentorship  
+🔹 Weekly premium resources  
+🔹 AI-powered career tools  
+🔹 Invite to private Telegram community`;
 
   await ctx.editMessageReplyMarkup(undefined).catch(() => {});
-  await ctx.reply(content, { parse_mode: "Markdown", ...keyboard });
+  await ctx.reply(content, { parse_mode: "Markdown", ...whatYouGetKeyboard() });
 });
 
 // ---------- Success Stories ----------
