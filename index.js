@@ -286,6 +286,5 @@ app.listen(PORT, () => {
 bot.launch()
   .then(() => console.log("🤖 Bot launched"))
   .catch((err) => {
-    console.error("❌ Bot launch failed:", err);
-    process.exit(1);
+    console.error("❌ Bot launch failed (will keep server alive):", err);
   });
