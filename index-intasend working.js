@@ -27,7 +27,7 @@ const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 const SERVER_URL = process.env.SERVER_URL;
 
 // INTASEND CONFIG
-const INTASEND_API_BASE = "https://api.intasend.com/api/v1"; // FIXED endpoint
+const INTASEND_API_BASE = "https://api.intasend.com/api/v1";
 const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY;
 const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY;
 const INTASEND_WEBHOOK_SECRET = process.env.INTASEND_WEBHOOK_SECRET;
@@ -178,7 +178,7 @@ bot.on('text', async (ctx) => {
       },
       {
         headers: {
-          Authorization: `token ${INTASEND_SECRET_KEY.trim()}`, // FIXED
+          Authorization: `token ${INTASEND_SECRET_KEY.trim()}`,
           Accept: "application/json"
         },
       }
@@ -214,16 +214,38 @@ bot.action("check_status", async (ctx) => {
   else ctx.reply(`✅ Subscription Status: *${data.status.toUpperCase()}*\n🗓 Expires on: ${data.end_at}`, { parse_mode: "Markdown" });
 });
 
-// --- INTASEND WEBHOOK ---
+// --- 🔧 FIXED INTASEND WEBHOOK ---
 app.post("/intasend/webhook", async (req, res) => {
+
+  // 🔐 HANDLE INTASEND CHALLENGE (DO NOT AUTH HERE)
+  if (req.body?.challenge) {
+    return res.status(200).json({ challenge: req.body.challenge });
+  }
+
   const headerSecret = req.headers['x-intasend-secret'];
-  if (headerSecret !== INTASEND_WEBHOOK_SECRET) return res.sendStatus(401);
+  if (headerSecret !== INTASEND_WEBHOOK_SECRET) {
+    return res.sendStatus(401);
+  }
 
   const event = req.body;
   console.log("IntaSend Webhook Received:", event.checkout_id, event.state);
 
   if (event.state === 'COMPLETE') {
     const { tracking_id, metadata, amount, api_ref } = event;
+    const paymentRef = tracking_id || api_ref;
+
+    // 🔁 IDEMPOTENCY CHECK
+    const { data: existing } = await supabase
+      .from("subscriptions")
+      .select("payment_ref")
+      .eq("payment_ref", paymentRef)
+      .single();
+
+    if (existing) {
+      console.log("Duplicate webhook ignored:", paymentRef);
+      return res.sendStatus(200);
+    }
+
     const telegram_id = metadata?.user_id;
     const plan = metadata?.plan;
     if (!telegram_id || !plan) return res.sendStatus(200);
@@ -240,7 +262,7 @@ app.post("/intasend/webhook", async (req, res) => {
         start_at: new Date().toISOString(),
         end_at: end_at.toISOString(),
         status: 'active',
-        payment_ref: tracking_id || api_ref,
+        payment_ref: paymentRef,
         amount_paid: amount,
         active: true
       }, { onConflict: 'telegram_id' });
@@ -253,18 +275,9 @@ app.post("/intasend/webhook", async (req, res) => {
           `🎉 Your *${durationMonths}-month* subscription is now active.\n🔗 Join: ${STATIC_INVITE_LINK}`,
           { parse_mode: "Markdown" }
         );
-      } catch (msgError) { console.error("Failed to send welcome message:", msgError.message); }
-    }
-  } else if (event.state === 'FAILED') {
-    const telegram_id = event.metadata?.user_id;
-    if (telegram_id) {
-      try {
-        await bot.telegram.sendMessage(
-          telegram_id,
-          `❌ Payment failed. Try again or contact support.`,
-          { parse_mode: "Markdown" }
-        );
-      } catch (msgError) { console.error("Failed to send failure message:", msgError.message); }
+      } catch (msgError) {
+        console.error("Failed to send welcome message:", msgError.message);
+      }
     }
   }
 
