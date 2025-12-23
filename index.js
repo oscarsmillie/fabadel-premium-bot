@@ -1,40 +1,49 @@
-// /index.js - INTASEND MIGRATION (Cloud Run-ready)
+// /index.js — PAYSTACK (KENYA + USD) CLOUD RUN READY
+
 import express from "express";
 import dotenv from "dotenv";
 import { Telegraf, Markup } from "telegraf";
 import { createClient } from "@supabase/supabase-js";
 import axios from "axios";
 import http from "http";
+import crypto from "crypto";
 
 dotenv.config();
 
+// ======================================================
+// APP SETUP
 const app = express();
 app.use(express.json());
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-const userState = new Map();
+// ======================================================
+// CONSTANTS
 const PREMIUM_GROUP = "@FabadelPremiumGroup";
 const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
-// Webhook Configuration
-const WEBHOOK_SECRET =
-  process.env.WEBHOOK_SECRET || "a-strong-secret-key-you-must-set";
-const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 const SERVER_URL = process.env.SERVER_URL;
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-// INTASEND CONFIG
-const INTASEND_API_BASE = "https://api.intasend.com/api/v1";
-const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY;
-const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY;
-const INTASEND_WEBHOOK_SECRET = process.env.INTASEND_WEBHOOK_SECRET;
+// PAYSTACK
+const PAYSTACK_API_BASE = "https://api.paystack.co";
+const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+const PAYSTACK_WEBHOOK_SECRET = process.env.PAYSTACK_WEBHOOK_SECRET;
+
+// USD → KES (safe fixed rate)
+const USD_TO_KES = 130;
 
 // ======================================================
-// UX KEYBOARDS
+// STATE
+const userState = new Map();
+
+// ======================================================
+// KEYBOARDS (UNCHANGED UX)
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("💳 View Plans", "view_plans")],
@@ -49,49 +58,6 @@ function backKeyboard() {
     [Markup.button.callback("🔙 Back to Menu", "back_to_menu")]
   ]);
 }
-
-// ======================================================
-// KICK-OFF FUNCTION
-async function kickExpiredUsers() {
-  const { data: expiredUsers } = await supabase
-    .from("subscriptions")
-    .select("telegram_id, end_at")
-    .eq("status", "active")
-    .lt("end_at", new Date().toISOString());
-
-  if (!expiredUsers?.length) return;
-
-  const kickedIds = [];
-
-  await Promise.all(
-    expiredUsers.map(async (user) => {
-      try {
-        await bot.telegram.banChatMember(PREMIUM_GROUP, user.telegram_id, {
-          until_date: Math.floor(Date.now() / 1000) + 300
-        });
-        await bot.telegram.unbanChatMember(
-          PREMIUM_GROUP,
-          user.telegram_id
-        );
-        kickedIds.push(user.telegram_id);
-      } catch {}
-    })
-  );
-
-  if (kickedIds.length) {
-    await supabase
-      .from("subscriptions")
-      .update({ status: "expired", active: false })
-      .in("telegram_id", kickedIds);
-  }
-}
-
-app.get("/api/kick-expired", async (req, res) => {
-  if (req.query.secret !== process.env.CRON_SECRET)
-    return res.sendStatus(401);
-  await kickExpiredUsers();
-  res.send("Done");
-});
 
 // ======================================================
 // START
@@ -112,8 +78,8 @@ Choose an option below 👇`,
 });
 
 // ======================================================
-// WHAT YOU GET
-bot.action("what_you_get", (ctx) => {
+// INFO PAGES
+bot.action("what_you_get", (ctx) =>
   ctx.reply(
 `🎁 *What You Get with Fabadel Premium*
 
@@ -123,32 +89,26 @@ bot.action("what_you_get", (ctx) => {
 ✅ AI-powered tools  
 ✅ Private Telegram community`,
     { parse_mode: "Markdown", ...backKeyboard() }
-  );
-});
+  )
+);
 
-// ======================================================
-// SUCCESS STORIES
-bot.action("success_stories", (ctx) => {
+bot.action("success_stories", (ctx) =>
   ctx.reply(
 `🎯 *Success Stories*
 
 ⭐ Aisha — Remote job in 3 weeks  
 ⭐ Kevin — Doubled interview invites  
-⭐ Mary — Career switch success  
-
-You could be next 🚀`,
+⭐ Mary — Career switch success`,
     { parse_mode: "Markdown", ...backKeyboard() }
-  );
-});
+  )
+);
+
+bot.action("back_to_menu", (ctx) =>
+  ctx.reply("⬅️ Back to main menu:", mainMenuKeyboard())
+);
 
 // ======================================================
-// BACK TO MENU
-bot.action("back_to_menu", (ctx) => {
-  ctx.reply("⬅️ Back to main menu:", mainMenuKeyboard());
-});
-
-// ======================================================
-// VIEW PLANS
+// PLANS
 bot.action("view_plans", (ctx) => {
   ctx.reply(
     "💳 Select your preferred plan:",
@@ -170,7 +130,7 @@ bot.action(/(kes|usd)_(1m|12m)/, (ctx) => {
 });
 
 // ======================================================
-// EMAIL → INTASEND
+// EMAIL → PAYSTACK
 bot.on("text", async (ctx) => {
   if (!userState.has(ctx.from.id)) return;
 
@@ -180,35 +140,46 @@ bot.on("text", async (ctx) => {
   const email = ctx.message.text.trim();
   if (!email.includes("@")) return ctx.reply("❌ Invalid email.");
 
-  const amount =
-    plan === "kes_1m" ? 299 :
-    plan === "kes_12m" ? 2999 :
-    plan === "usd_1m" ? 2.3 : 23;
+  let amountKES = 0;
+  let months = plan.endsWith("1m") ? 1 : 12;
 
-  const currency = plan.startsWith("kes") ? "KES" : "USD";
-  const api_ref = `${ctx.from.id}_${Date.now()}`;
+  if (plan === "kes_1m") amountKES = 299;
+  if (plan === "kes_12m") amountKES = 2999;
+  if (plan === "usd_1m") amountKES = Math.round(2.3 * USD_TO_KES);
+  if (plan === "usd_12m") amountKES = Math.round(23 * USD_TO_KES);
+
+  const reference = `TG_${ctx.from.id}_${Date.now()}`;
 
   try {
     const res = await axios.post(
-      `${INTASEND_API_BASE}/checkout/`,
+      `${PAYSTACK_API_BASE}/transaction/initialize`,
       {
-        public_key: INTASEND_PUBLISHABLE_KEY,
-        amount,
-        currency,
-        api_ref,
-        customer: { email },
-        metadata: { user_id: ctx.from.id, plan },
-        redirect_url: `${SERVER_URL}/intasend/callback`
+        email,
+        amount: amountKES * 100,
+        currency: "KES",
+        reference,
+        metadata: {
+          telegram_id: ctx.from.id,
+          plan,
+          months
+        },
+        callback_url: `${SERVER_URL}/paystack/callback`
       },
-      { headers: { Authorization: `token ${INTASEND_SECRET_KEY}` } }
+      {
+        headers: {
+          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+          "Content-Type": "application/json"
+        }
+      }
     );
 
     ctx.reply("💳 Complete payment:", {
       reply_markup: Markup.inlineKeyboard([
-        [Markup.button.url("Pay Now", res.data.url)]
+        [Markup.button.url("Pay Now", res.data.data.authorization_url)]
       ]).reply_markup
     });
-  } catch {
+  } catch (err) {
+    console.error(err.response?.data || err.message);
     ctx.reply("❌ Payment initialization failed.");
   }
 });
@@ -222,7 +193,8 @@ bot.action("check_status", async (ctx) => {
     .eq("telegram_id", ctx.from.id)
     .single();
 
-  if (!data) ctx.reply("❌ No active subscription.");
+  if (!data)
+    ctx.reply("❌ No active subscription.");
   else
     ctx.reply(
       `✅ Status: *${data.status}*\n🗓 Expires: ${data.end_at}`,
@@ -231,35 +203,51 @@ bot.action("check_status", async (ctx) => {
 });
 
 // ======================================================
-// INTASEND WEBHOOK
-app.post("/intasend/webhook", async (req, res) => {
-  if (req.body?.challenge)
-    return res.json({ challenge: req.body.challenge });
+// PAYSTACK WEBHOOK (RENEW + NEW)
+app.post("/paystack/webhook", async (req, res) => {
+  const hash = crypto
+    .createHmac("sha512", PAYSTACK_WEBHOOK_SECRET)
+    .update(JSON.stringify(req.body))
+    .digest("hex");
 
-  if (req.headers["x-intasend-secret"] !== INTASEND_WEBHOOK_SECRET)
+  if (hash !== req.headers["x-paystack-signature"])
     return res.sendStatus(401);
 
-  if (req.body.state === "COMPLETE") {
-    const { metadata, tracking_id, api_ref, amount } = req.body;
-    const months = metadata.plan.endsWith("1m") ? 1 : 12;
+  const event = req.body;
 
-    const end = new Date();
-    end.setMonth(end.getMonth() + months);
+  if (event.event === "charge.success") {
+    const data = event.data;
+    const { telegram_id, plan, months } = data.metadata;
+
+    // Fetch existing subscription
+    const { data: existing } = await supabase
+      .from("subscriptions")
+      .select("end_at")
+      .eq("telegram_id", telegram_id)
+      .single();
+
+    let startDate = new Date();
+    if (existing?.end_at && new Date(existing.end_at) > startDate) {
+      startDate = new Date(existing.end_at);
+    }
+
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + Number(months));
 
     await supabase.from("subscriptions").upsert({
-      telegram_id: metadata.user_id,
-      plan: metadata.plan,
+      telegram_id,
+      plan,
       start_at: new Date().toISOString(),
-      end_at: end.toISOString(),
+      end_at: endDate.toISOString(),
       status: "active",
-      payment_ref: tracking_id || api_ref,
-      amount_paid: amount,
+      payment_ref: data.reference,
+      amount_paid: data.amount / 100,
       active: true
     });
 
     await bot.telegram.sendMessage(
-      metadata.user_id,
-      `🎉 Subscription active!\n🔗 Join: ${STATIC_INVITE_LINK}`
+      telegram_id,
+      `🎉 Subscription active!\n🗓 Valid until: ${endDate.toDateString()}\n🔗 Join: ${STATIC_INVITE_LINK}`
     );
   }
 
@@ -267,22 +255,22 @@ app.post("/intasend/webhook", async (req, res) => {
 });
 
 // ======================================================
-app.get("/intasend/callback", (_, res) =>
-  res.send("Payment complete. Return to Telegram.")
+app.get("/paystack/callback", (_, res) =>
+  res.send("Payment successful. Return to Telegram.")
 );
 
 // ======================================================
-async function registerWebhook() {
-  if (!SERVER_URL) return;
-  await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
-    secret_token: WEBHOOK_SECRET
-  });
-}
+// WEBHOOK BOOTSTRAP
+const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 
 app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
 
 const PORT = process.env.PORT || 8080;
-http.createServer(app).listen(PORT, () => {
+http.createServer(app).listen(PORT, async () => {
   console.log(`✅ Server running on port ${PORT}`);
-  registerWebhook();
+  if (SERVER_URL) {
+    await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
+      secret_token: WEBHOOK_SECRET
+    });
+  }
 });
