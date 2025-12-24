@@ -1,4 +1,4 @@
-// /index.js — PAYSTACK (KENYA + USD) CLOUD RUN READY
+// /index.js — PAYSTACK (KENYA + USD) CLOUD RUN READY (FIXED)
 
 import express from "express";
 import dotenv from "dotenv";
@@ -13,6 +13,9 @@ dotenv.config();
 // ======================================================
 // APP SETUP
 const app = express();
+
+// IMPORTANT:
+// Use JSON parser for everything EXCEPT Paystack webhook
 app.use(express.json());
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -33,9 +36,8 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 // PAYSTACK
 const PAYSTACK_API_BASE = "https://api.paystack.co";
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
-const PAYSTACK_WEBHOOK_SECRET = process.env.PAYSTACK_WEBHOOK_SECRET;
 
-// USD → KES (safe fixed rate)
+// USD → KES (fixed rate)
 const USD_TO_KES = 130;
 
 // ======================================================
@@ -141,7 +143,7 @@ bot.on("text", async (ctx) => {
   if (!email.includes("@")) return ctx.reply("❌ Invalid email.");
 
   let amountKES = 0;
-  let months = plan.endsWith("1m") ? 1 : 12;
+  const months = plan.endsWith("1m") ? 1 : 12;
 
   if (plan === "kes_1m") amountKES = 299;
   if (plan === "kes_12m") amountKES = 2999;
@@ -203,56 +205,65 @@ bot.action("check_status", async (ctx) => {
 });
 
 // ======================================================
-// PAYSTACK WEBHOOK (RENEW + NEW)
-app.post("/paystack/webhook", async (req, res) => {
-  const hash = crypto
-    .createHmac("sha512", PAYSTACK_WEBHOOK_SECRET)
-    .update(JSON.stringify(req.body))
-    .digest("hex");
+// PAYSTACK WEBHOOK (RAW BODY REQUIRED)
+app.post(
+  "/paystack-webhook",
+  express.raw({ type: "application/json" }),
+  async (req, res) => {
+    const signature = req.headers["x-paystack-signature"];
 
-  if (hash !== req.headers["x-paystack-signature"])
-    return res.sendStatus(401);
+    const hash = crypto
+      .createHmac("sha512", PAYSTACK_SECRET_KEY)
+      .update(req.body)
+      .digest("hex");
 
-  const event = req.body;
-
-  if (event.event === "charge.success") {
-    const data = event.data;
-    const { telegram_id, plan, months } = data.metadata;
-
-    // Fetch existing subscription
-    const { data: existing } = await supabase
-      .from("subscriptions")
-      .select("end_at")
-      .eq("telegram_id", telegram_id)
-      .single();
-
-    let startDate = new Date();
-    if (existing?.end_at && new Date(existing.end_at) > startDate) {
-      startDate = new Date(existing.end_at);
+    if (hash !== signature) {
+      console.error("❌ Invalid Paystack signature");
+      return res.sendStatus(401);
     }
 
-    const endDate = new Date(startDate);
-    endDate.setMonth(endDate.getMonth() + Number(months));
+    const event = JSON.parse(req.body.toString());
 
-    await supabase.from("subscriptions").upsert({
-      telegram_id,
-      plan,
-      start_at: new Date().toISOString(),
-      end_at: endDate.toISOString(),
-      status: "active",
-      payment_ref: data.reference,
-      amount_paid: data.amount / 100,
-      active: true
-    });
+    if (event.event === "charge.success") {
+      const data = event.data;
+      const { telegram_id, plan, months } = data.metadata || {};
 
-    await bot.telegram.sendMessage(
-      telegram_id,
-      `🎉 Subscription active!\n🗓 Valid until: ${endDate.toDateString()}\n🔗 Join: ${STATIC_INVITE_LINK}`
-    );
+      if (!telegram_id) return res.sendStatus(200);
+
+      const { data: existing } = await supabase
+        .from("subscriptions")
+        .select("end_at")
+        .eq("telegram_id", telegram_id)
+        .single();
+
+      let startDate = new Date();
+      if (existing?.end_at && new Date(existing.end_at) > startDate) {
+        startDate = new Date(existing.end_at);
+      }
+
+      const endDate = new Date(startDate);
+      endDate.setMonth(endDate.getMonth() + Number(months));
+
+      await supabase.from("subscriptions").upsert({
+        telegram_id,
+        plan,
+        start_at: new Date().toISOString(),
+        end_at: endDate.toISOString(),
+        status: "active",
+        payment_ref: data.reference,
+        amount_paid: data.amount / 100,
+        active: true
+      });
+
+      await bot.telegram.sendMessage(
+        telegram_id,
+        `🎉 Subscription active!\n🗓 Valid until: ${endDate.toDateString()}\n🔗 Join: ${STATIC_INVITE_LINK}`
+      );
+    }
+
+    res.sendStatus(200);
   }
-
-  res.sendStatus(200);
-});
+);
 
 // ======================================================
 app.get("/paystack/callback", (_, res) =>
@@ -260,7 +271,7 @@ app.get("/paystack/callback", (_, res) =>
 );
 
 // ======================================================
-// WEBHOOK BOOTSTRAP
+// TELEGRAM WEBHOOK BOOTSTRAP
 const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 
 app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
