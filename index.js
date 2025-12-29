@@ -1,4 +1,4 @@
-// /index.js — PAYSTACK (KENYA + USD) CLOUD RUN READY (FIXED)
+// index.js — PAYSTACK (KENYA + USD) CLOUD RUN READY (WORKING)
 
 import express from "express";
 import dotenv from "dotenv";
@@ -14,12 +14,25 @@ dotenv.config();
 // APP SETUP
 const app = express();
 
-// IMPORTANT:
-// Use JSON parser for everything EXCEPT Paystack webhook
-app.use(express.json());
+/**
+ * IMPORTANT:
+ * JSON for everything EXCEPT Paystack webhook
+ * (Paystack requires raw body for signature verification)
+ */
+app.use((req, res, next) => {
+  if (req.originalUrl === "/paystack-webhook") {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
 
+// ======================================================
+// TELEGRAM
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// ======================================================
+// SUPABASE
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -45,7 +58,7 @@ const USD_TO_KES = 130;
 const userState = new Map();
 
 // ======================================================
-// KEYBOARDS (UNCHANGED UX)
+// KEYBOARDS
 function mainMenuKeyboard() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("💳 View Plans", "view_plans")],
@@ -68,28 +81,20 @@ bot.start((ctx) => {
 `👋 Hello ${ctx.from.first_name}!
 Welcome to *Fabadel Premium* 🚀
 
-Here you can:
-💼 Access exclusive job opportunities
-📚 Learn high-value skills
-🎯 See real success stories
-💳 Upgrade anytime for premium access
-
 Choose an option below 👇`,
     { parse_mode: "Markdown", ...mainMenuKeyboard() }
   );
 });
 
 // ======================================================
-// INFO PAGES
+// INFO
 bot.action("what_you_get", (ctx) =>
   ctx.reply(
-`🎁 *What You Get with Fabadel Premium*
-
-✅ Curated job opportunities  
-✅ Premium CV & cover letter templates  
-✅ Career growth resources  
-✅ AI-powered tools  
-✅ Private Telegram community`,
+`🎁 *What You Get*
+✅ Curated jobs
+✅ Premium templates
+✅ Career resources
+✅ Private community`,
     { parse_mode: "Markdown", ...backKeyboard() }
   )
 );
@@ -97,10 +102,8 @@ bot.action("what_you_get", (ctx) =>
 bot.action("success_stories", (ctx) =>
   ctx.reply(
 `🎯 *Success Stories*
-
-⭐ Aisha — Remote job in 3 weeks  
-⭐ Kevin — Doubled interview invites  
-⭐ Mary — Career switch success`,
+⭐ Aisha — Remote job
+⭐ Kevin — More interviews`,
     { parse_mode: "Markdown", ...backKeyboard() }
   )
 );
@@ -113,12 +116,12 @@ bot.action("back_to_menu", (ctx) =>
 // PLANS
 bot.action("view_plans", (ctx) => {
   ctx.reply(
-    "💳 Select your preferred plan:",
+    "💳 Select your plan:",
     Markup.inlineKeyboard([
       [Markup.button.callback("KES 299 / Month", "kes_1m")],
       [Markup.button.callback("KES 2,999 / Year", "kes_12m")],
       [Markup.button.callback("USD 2.30 / Month", "usd_1m")],
-      [Markup.button.callback("USD 23.00 / Year", "usd_12m")],
+      [Markup.button.callback("USD 23 / Year", "usd_12m")],
       [Markup.button.callback("🔙 Back", "back_to_menu")]
     ])
   );
@@ -128,7 +131,7 @@ bot.action("view_plans", (ctx) => {
 // ASK EMAIL
 bot.action(/(kes|usd)_(1m|12m)/, (ctx) => {
   userState.set(ctx.from.id, ctx.match[0]);
-  ctx.reply("📧 Please enter your email address for payment:");
+  ctx.reply("📧 Enter your email address:");
 });
 
 // ======================================================
@@ -175,11 +178,12 @@ bot.on("text", async (ctx) => {
       }
     );
 
-    ctx.reply("💳 Complete payment:", {
-      reply_markup: Markup.inlineKeyboard([
+    ctx.reply(
+      "💳 Complete payment:",
+      Markup.inlineKeyboard([
         [Markup.button.url("Pay Now", res.data.data.authorization_url)]
-      ]).reply_markup
-    });
+      ])
+    );
   } catch (err) {
     console.error(err.response?.data || err.message);
     ctx.reply("❌ Payment initialization failed.");
@@ -205,11 +209,13 @@ bot.action("check_status", async (ctx) => {
 });
 
 // ======================================================
-// PAYSTACK WEBHOOK (RAW BODY REQUIRED)
+// PAYSTACK WEBHOOK (RAW BODY)
 app.post(
   "/paystack-webhook",
   express.raw({ type: "application/json" }),
   async (req, res) => {
+    console.log("✅ Paystack webhook received");
+
     const signature = req.headers["x-paystack-signature"];
 
     const hash = crypto
@@ -227,7 +233,6 @@ app.post(
     if (event.event === "charge.success") {
       const data = event.data;
       const { telegram_id, plan, months } = data.metadata || {};
-
       if (!telegram_id) return res.sendStatus(200);
 
       const { data: existing } = await supabase
@@ -266,17 +271,20 @@ app.post(
 );
 
 // ======================================================
+// PAYSTACK CALLBACK
 app.get("/paystack/callback", (_, res) =>
   res.send("Payment successful. Return to Telegram.")
 );
 
 // ======================================================
-// TELEGRAM WEBHOOK BOOTSTRAP
+// TELEGRAM WEBHOOK
 const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
-
 app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
 
+// ======================================================
+// SERVER
 const PORT = process.env.PORT || 8080;
+
 http.createServer(app).listen(PORT, async () => {
   console.log(`✅ Server running on port ${PORT}`);
   if (SERVER_URL) {
