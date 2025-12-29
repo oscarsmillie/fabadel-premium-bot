@@ -1,4 +1,4 @@
-// index.js — PAYSTACK (KENYA + USD) CLOUD RUN READY (WORKING)
+// index.js — INTASEND (KENYA + USD) CLOUD RUN READY
 
 import express from "express";
 import dotenv from "dotenv";
@@ -16,11 +16,10 @@ const app = express();
 
 /**
  * IMPORTANT:
- * JSON for everything EXCEPT Paystack webhook
- * (Paystack requires raw body for signature verification)
+ * JSON for everything EXCEPT IntaSend webhook
  */
 app.use((req, res, next) => {
-  if (req.originalUrl === "/paystack-webhook") {
+  if (req.originalUrl === "/intasend-webhook") {
     next();
   } else {
     express.json()(req, res, next);
@@ -46,11 +45,12 @@ const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 const SERVER_URL = process.env.SERVER_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
-// PAYSTACK
-const PAYSTACK_API_BASE = "https://api.paystack.co";
-const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+// INTASEND
+const INTASEND_API_BASE = "https://payment.intasend.com/api/v1";
+const INTASEND_SECRET_KEY = process.env.INTASEND_SECRET_KEY;
+const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY;
 
-// USD → KES (fixed rate)
+// USD → KES (fixed)
 const USD_TO_KES = 130;
 
 // ======================================================
@@ -80,14 +80,12 @@ bot.start((ctx) => {
   ctx.reply(
 `👋 Hello ${ctx.from.first_name}!
 
-Welcome to *Fabadel Premium* 🚀 
+Welcome to *Fabadel Premium* 🚀
 
-Here you can: 
-
-💼 Access exclusive job opportunities 
-📚 Learn high-value skills 
-🎯 See real success stories 
-💳 Upgrade anytime for premium access
+💼 Exclusive job opportunities  
+📚 Premium learning resources  
+🤝 Private Telegram community  
+💳 Secure mobile & card payments  
 
 Choose an option below 👇`,
     { parse_mode: "Markdown", ...mainMenuKeyboard() }
@@ -98,11 +96,13 @@ Choose an option below 👇`,
 // INFO
 bot.action("what_you_get", (ctx) =>
   ctx.reply(
-`🎁 *What You Get*
-✅ Curated jobs
-✅ Premium templates
-✅ Career resources
-✅ Private community`,
+`🎁 *Fabadel Premium Benefits*
+
+✅ Curated high-quality jobs  
+✅ Premium CV & cover letters  
+✅ Interview preparation  
+✅ Career mentorship  
+✅ Private members-only Telegram group`,
     { parse_mode: "Markdown", ...backKeyboard() }
   )
 );
@@ -110,8 +110,10 @@ bot.action("what_you_get", (ctx) =>
 bot.action("success_stories", (ctx) =>
   ctx.reply(
 `🎯 *Success Stories*
-⭐ Aisha — Remote job
-⭐ Kevin — More interviews`,
+
+⭐ Aisha — Remote role in 3 weeks  
+⭐ Kevin — 2× interview callbacks  
+⭐ Mary — Career switch success`,
     { parse_mode: "Markdown", ...backKeyboard() }
   )
 );
@@ -139,11 +141,11 @@ bot.action("view_plans", (ctx) => {
 // ASK EMAIL
 bot.action(/(kes|usd)_(1m|12m)/, (ctx) => {
   userState.set(ctx.from.id, ctx.match[0]);
-  ctx.reply("📧 Enter your email address:");
+  ctx.reply("📧 Enter your email address for payment:");
 });
 
 // ======================================================
-// EMAIL → PAYSTACK
+// EMAIL → INTASEND
 bot.on("text", async (ctx) => {
   if (!userState.has(ctx.from.id)) return;
 
@@ -151,7 +153,7 @@ bot.on("text", async (ctx) => {
   userState.delete(ctx.from.id);
 
   const email = ctx.message.text.trim();
-  if (!email.includes("@")) return ctx.reply("❌ Invalid email.");
+  if (!email.includes("@")) return ctx.reply("❌ Invalid email address.");
 
   let amountKES = 0;
   const months = plan.endsWith("1m") ? 1 : 12;
@@ -165,36 +167,37 @@ bot.on("text", async (ctx) => {
 
   try {
     const res = await axios.post(
-      `${PAYSTACK_API_BASE}/transaction/initialize`,
+      `${INTASEND_API_BASE}/checkout/`,
       {
-        email,
-        amount: amountKES * 100,
+        public_key: INTASEND_PUBLISHABLE_KEY,
+        amount: amountKES,
         currency: "KES",
+        email,
         reference,
+        redirect_url: `${SERVER_URL}/intasend/callback`,
         metadata: {
           telegram_id: ctx.from.id,
           plan,
           months
-        },
-        callback_url: `${SERVER_URL}/paystack/callback`
+        }
       },
       {
         headers: {
-          Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+          Authorization: `Bearer ${INTASEND_SECRET_KEY}`,
           "Content-Type": "application/json"
         }
       }
     );
 
     ctx.reply(
-      "💳 Complete payment:",
+      "💳 Complete your payment securely:",
       Markup.inlineKeyboard([
-        [Markup.button.url("Pay Now", res.data.data.authorization_url)]
+        [Markup.button.url("Pay Now", res.data.url)]
       ])
     );
   } catch (err) {
     console.error(err.response?.data || err.message);
-    ctx.reply("❌ Payment initialization failed.");
+    ctx.reply("❌ Payment initialization failed. Try again.");
   }
 });
 
@@ -211,36 +214,35 @@ bot.action("check_status", async (ctx) => {
     ctx.reply("❌ No active subscription.");
   else
     ctx.reply(
-      `✅ Status: *${data.status}*\n🗓 Expires: ${data.end_at}`,
+      `✅ *Subscription Active*\n🗓 Expires on: ${new Date(data.end_at).toDateString()}`,
       { parse_mode: "Markdown" }
     );
 });
 
 // ======================================================
-// PAYSTACK WEBHOOK (RAW BODY)
+// INTASEND WEBHOOK
 app.post(
-  "/paystack-webhook",
+  "/intasend-webhook",
   express.raw({ type: "application/json" }),
   async (req, res) => {
-    console.log("✅ Paystack webhook received");
+    console.log("✅ IntaSend webhook received");
 
-    const signature = req.headers["x-paystack-signature"];
+    const signature = req.headers["x-intasend-signature"];
 
-    const hash = crypto
-      .createHmac("sha512", PAYSTACK_SECRET_KEY)
+    const computed = crypto
+      .createHmac("sha256", INTASEND_SECRET_KEY)
       .update(req.body)
       .digest("hex");
 
-    if (hash !== signature) {
-      console.error("❌ Invalid Paystack signature");
+    if (signature !== computed) {
+      console.error("❌ Invalid IntaSend signature");
       return res.sendStatus(401);
     }
 
     const event = JSON.parse(req.body.toString());
 
-    if (event.event === "charge.success") {
-      const data = event.data;
-      const { telegram_id, plan, months } = data.metadata || {};
+    if (event.event === "payment.completed") {
+      const { telegram_id, plan, months } = event.metadata || {};
       if (!telegram_id) return res.sendStatus(200);
 
       const { data: existing } = await supabase
@@ -263,14 +265,30 @@ app.post(
         start_at: new Date().toISOString(),
         end_at: endDate.toISOString(),
         status: "active",
-        payment_ref: data.reference,
-        amount_paid: data.amount / 100,
+        payment_ref: event.reference,
+        amount_paid: event.amount,
         active: true
       });
 
       await bot.telegram.sendMessage(
         telegram_id,
-        `🎉 Subscription active!\n🗓 Valid until: ${endDate.toDateString()}\n🔗 Join: ${STATIC_INVITE_LINK}`
+`🎉 *Welcome to Fabadel Premium!* 🚀
+
+Your subscription is now *active*.
+
+📅 *Valid until:* ${endDate.toDateString()}
+
+👇 *Next steps to get started:*
+1️⃣ Join the private Telegram group  
+2️⃣ Check pinned messages for resources  
+3️⃣ Start applying for curated jobs  
+4️⃣ Reach out to admins anytime  
+
+🔗 *Join here:*  
+${STATIC_INVITE_LINK}
+
+Welcome aboard 💎`,
+        { parse_mode: "Markdown" }
       );
     }
 
@@ -279,8 +297,8 @@ app.post(
 );
 
 // ======================================================
-// PAYSTACK CALLBACK
-app.get("/paystack/callback", (_, res) =>
+// INTASEND CALLBACK
+app.get("/intasend/callback", (_, res) =>
   res.send("Payment successful. Return to Telegram.")
 );
 
