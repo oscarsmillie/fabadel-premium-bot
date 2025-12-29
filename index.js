@@ -79,7 +79,15 @@ function backKeyboard() {
 bot.start((ctx) => {
   ctx.reply(
 `👋 Hello ${ctx.from.first_name}!
-Welcome to *Fabadel Premium* 🚀
+
+Welcome to *Fabadel Premium* 🚀 
+
+Here you can: 
+
+💼 Access exclusive job opportunities 
+📚 Learn high-value skills 
+🎯 See real success stories 
+💳 Upgrade anytime for premium access
 
 Choose an option below 👇`,
     { parse_mode: "Markdown", ...mainMenuKeyboard() }
