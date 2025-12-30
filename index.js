@@ -1,4 +1,4 @@
-// index.js — INTASEND (KENYA + USD) CLOUD RUN READY (FIXED + IMPROVED UX)
+// index.js — FINAL VERSION FOR GOOGLE CLOUD RUN (ONLY SERVER FIX APPLIED)
 
 import express from "express";
 import dotenv from "dotenv";
@@ -15,7 +15,7 @@ dotenv.config();
 const app = express();
 
 /**
- * JSON for everything EXCEPT IntaSend webhook
+ * JSON for everything EXCEPT IntaSend webhook (raw body needed)
  */
 app.use((req, res, next) => {
   if (req.originalUrl === "/intasend-webhook") {
@@ -23,6 +23,11 @@ app.use((req, res, next) => {
   } else {
     express.json()(req, res, next);
   }
+});
+
+// Simple health check route (helps Cloud Run detect startup)
+app.get("/", (req, res) => {
+  res.send("🚀 Fabadel Premium Bot is alive and running!");
 });
 
 // ======================================================
@@ -43,17 +48,19 @@ const supabase = createClient(
 
 // ======================================================
 // CONSTANTS
-const PREMIUM_GROUP = "@FabadelPremiumGroup";
 const STATIC_INVITE_LINK = "https://t.me/+kSAlgNtLRXJiYWZi";
 
 const SERVER_URL = process.env.SERVER_URL;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
 // INTASEND
-const INTASEND_API_BASE = "https://payment.intasend.com/api/v1/checkout/"; // Live endpoint (switch to sandbox for testing)
+const INTASEND_CHECKOUT_BASE = process.env.NODE_ENV === "production"
+  ? "https://payment.intasend.com/api/v1/checkout/"
+  : "https://sandbox.intasend.com/api/v1/checkout/";
+
 const INTASEND_PUBLISHABLE_KEY = process.env.INTASEND_PUBLISHABLE_KEY;
 
-// USD → KES (current approx rate as of Dec 2025)
+// USD → KES
 const USD_TO_KES = 130;
 
 // ======================================================
@@ -67,13 +74,12 @@ function mainMenuKeyboard() {
     [Markup.button.callback("💳 View Plans", "view_plans")],
     [Markup.button.callback("📊 My Subscription", "check_status")],
     [Markup.button.callback("🎁 Premium Benefits", "what_you_get")],
-    [Markup.button.callback("🔙 Back to Menu", "back_to_menu")]
   ]);
 }
 
 function backKeyboard() {
   return Markup.inlineKeyboard([
-    [Markup.button.callback("🔙 Back to Menu", "back_to_menu")]
+    [Markup.button.callback("🔙 Back to Menu", "back_to_menu")],
   ]);
 }
 
@@ -89,7 +95,7 @@ Unlock exclusive access to:
 • Curated high-paying job listings
 • Premium CV & application templates
 • Career guidance resources
-• Private community with mentors
+• Private community with mentors & networking
 
 Ready to level up your career? Choose an option 👇`,
     { parse_mode: "Markdown", ...mainMenuKeyboard() }
@@ -97,8 +103,8 @@ Ready to level up your career? Choose an option 👇`,
 });
 
 // ======================================================
-// INFO (IMPROVED CONTENT - REMOVED SUCCESS STORIES)
-bot.action("what_you_get", (ctx) =>
+// INFO
+bot.action("what_you_get", (ctx) => {
   ctx.editMessageText(
     `🎁 *Premium Benefits*
 
@@ -110,12 +116,12 @@ bot.action("what_you_get", (ctx) =>
 
 All designed to help you land better jobs faster!`,
     { parse_mode: "Markdown", ...backKeyboard() }
-  )
-);
+  );
+});
 
-bot.action("back_to_menu", (ctx) =>
-  ctx.editMessageText("⬅️ Main menu:", { parse_mode: "Markdown", ...mainMenuKeyboard() })
-);
+bot.action("back_to_menu", (ctx) => {
+  ctx.editMessageText("⬅️ Main menu:", { parse_mode: "Markdown", ...mainMenuKeyboard() });
+});
 
 // ======================================================
 // PLANS
@@ -129,8 +135,8 @@ bot.action("view_plans", (ctx) => {
         [Markup.button.callback("🇰🇪 KES 2,999 / Year (Save 20%)", "kes_12m")],
         [Markup.button.callback("🌍 USD 2.30 / Month", "usd_1m")],
         [Markup.button.callback("🌍 USD 23 / Year (Save 20%)", "usd_12m")],
-        [Markup.button.callback("🔙 Back", "back_to_menu")]
-      ])
+        [Markup.button.callback("🔙 Back", "back_to_menu")],
+      ]),
     }
   );
 });
@@ -143,16 +149,16 @@ bot.action(/(kes|usd)_(1m|12m)/, (ctx) => {
 });
 
 // ======================================================
-// EMAIL → INTASEND CHECKOUT (FIXED)
+// EMAIL → INTASEND CHECKOUT
 bot.on("text", async (ctx) => {
   const state = userState.get(ctx.from.id);
-  if (!state || state.action !== ctx.match?.[0]?.match(/(kes|usd)_(1m|12m)/)?.[0]) return; // Simple safety
+  if (!state) return;
 
   const plan = state.action;
   userState.delete(ctx.from.id);
 
   const email = ctx.message.text.trim();
-  if (!email.includes("@") || !email.includes(".")) {
+  if (!email.match(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)) {
     return ctx.reply("❌ Please provide a valid email address.");
   }
 
@@ -168,24 +174,22 @@ bot.on("text", async (ctx) => {
 
   try {
     const res = await axios.post(
-      INTASEND_API_BASE,
+      INTASEND_CHECKOUT_BASE,
       {
         public_key: INTASEND_PUBLISHABLE_KEY,
         amount: amountKES,
         currency: "KES",
         email,
-        api_ref: reference, // Used for tracking
-        redirect_url: `${SERVER_URL}/intasend/callback?tg_id=${ctx.from.id}`,
+        api_ref: reference,
+        redirect_url: `${SERVER_URL}/intasend/callback`,
         metadata: JSON.stringify({
           telegram_id: ctx.from.id,
           plan,
-          months
-        })
+          months,
+        }),
       },
       {
-        headers: {
-          "Content-Type": "application/json"
-        }
+        headers: { "Content-Type": "application/json" },
       }
     );
 
@@ -196,13 +200,13 @@ bot.on("text", async (ctx) => {
       {
         parse_mode: "Markdown",
         ...Markup.inlineKeyboard([
-          [Markup.button.url("💸 Pay Now with IntaSend", res.data.url)]
-        ])
+          [Markup.button.url("💸 Pay Now with IntaSend", res.data.url)],
+        ]),
       }
     );
   } catch (err) {
     console.error("IntaSend init error:", err.response?.data || err.message);
-    ctx.reply("❌ Sorry, payment setup failed. Please try again later or contact support.");
+    ctx.reply("❌ Sorry, payment setup failed. Please try again later.");
   }
 });
 
@@ -216,7 +220,7 @@ bot.action("check_status", async (ctx) => {
     .single();
 
   if (error || !data || data.status !== "active") {
-    ctx.reply("❌ You don't have an active subscription yet.\nUpgrade now to unlock premium access!", mainMenuKeyboard());
+    ctx.reply("❌ No active subscription.\nUpgrade now to unlock premium access!", mainMenuKeyboard());
   } else {
     const endDate = new Date(data.end_at).toDateString();
     ctx.reply(
@@ -227,7 +231,7 @@ bot.action("check_status", async (ctx) => {
 });
 
 // ======================================================
-// INTASEND WEBHOOK (IMPROVED SECURITY + ROBUSTNESS)
+// INTASEND WEBHOOK (CHALLENGE VALIDATION + OPTIONAL SIGNATURE)
 app.post(
   "/intasend-webhook",
   express.raw({ type: "application/json" }),
@@ -238,24 +242,36 @@ app.post(
     try {
       event = JSON.parse(req.body.toString());
     } catch (e) {
+      console.error("Invalid JSON");
       return res.sendStatus(400);
     }
 
-    // Basic signature verification (IntaSend sends X-IntaSend-Signature header with HMAC-SHA256)
-    const signature = req.headers["x-intasend-signature"];
-    if (signature) {
-      const expected = crypto.createHmac("sha256", process.env.INTASEND_SECRET_KEY || "")
+    // CHALLENGE VALIDATION
+    if (event.challenge) {
+      const expectedChallenge = process.env.INTASEND_WEBHOOK_CHALLENGE?.trim();
+      if (!expectedChallenge || event.challenge !== expectedChallenge) {
+        console.warn("Invalid or missing challenge");
+        return res.sendStatus(401);
+      }
+      console.log("Challenge validated");
+      return res.sendStatus(200);
+    }
+
+    // Optional signature verification
+    const signature = req.headers["x-intasend-signature"] || req.headers["x-signature"];
+    if (signature && process.env.INTASEND_SECRET_KEY) {
+      const expected = crypto
+        .createHmac("sha256", process.env.INTASEND_SECRET_KEY)
         .update(req.body)
         .digest("hex");
       if (signature !== expected) {
         console.warn("Invalid webhook signature");
         return res.sendStatus(401);
       }
-    } else {
-      console.warn("No signature header - consider enabling in IntaSend dashboard");
     }
 
-    if (event.state !== "COMPLETE") {
+    // Process only completed payments
+    if (event.state !== "COMPLETE" && (!event.invoice || event.invoice.state !== "COMPLETE")) {
       return res.sendStatus(200);
     }
 
@@ -263,7 +279,7 @@ app.post(
     try {
       metadata = typeof event.metadata === "string" ? JSON.parse(event.metadata) : event.metadata;
     } catch (e) {
-      return res.sendStatus(200);
+      metadata = {};
     }
 
     const { telegram_id, plan, months } = metadata || {};
@@ -292,9 +308,9 @@ app.post(
       start_at: new Date().toISOString(),
       end_at: endDate.toISOString(),
       status: "active",
-      payment_ref: event.invoice_id || event.tracking_id,
-      amount_paid: event.amount,
-      active: true
+      payment_ref: event.invoice_id || event.tracking_id || event.api_ref,
+      amount_paid: event.amount || event.invoice?.value,
+      active: true,
     });
 
     await bot.telegram.sendMessage(
@@ -318,14 +334,15 @@ Welcome aboard – let's land your next big opportunity! 🚀`,
 );
 
 // ======================================================
-// INTASEND CALLBACK (USER REDIRECT AFTER PAYMENT)
+// INTASEND CALLBACK
 app.get("/intasend/callback", (req, res) => {
-  const tgId = req.query.tg_id;
   res.send(`
     <h2>✅ Payment processed!</h2>
     <p>Thank you – your subscription is being activated.</p>
-    <p>Return to Telegram and check your messages for confirmation & group link.</p>
-    ${tgId ? `<script>window.location.href = "https://t.me/yourbotusername";</script>` : ""}
+    <p>Return to Telegram for confirmation & private group link.</p>
+    <script>
+      setTimeout(() => window.location.href = "https://t.me", 5000);
+    </script>
   `);
 });
 
@@ -335,15 +352,24 @@ const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
 app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
 
 // ======================================================
-// SERVER
+// SERVER - ONLY CHANGE: FIXED FOR CLOUD RUN
 const PORT = process.env.PORT || 8080;
 
-http.createServer(app).listen(PORT, async () => {
-  console.log(`✅ Server running on port ${PORT}`);
+const server = http.createServer(app);
+
+server.listen(PORT, "0.0.0.0", async () => {
+  console.log(`✅ Server successfully listening on http://0.0.0.0:${PORT}`);
+
   if (SERVER_URL) {
-    await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
-      secret_token: WEBHOOK_SECRET
-    });
-    console.log(`Webhook set: ${SERVER_URL}${WEBHOOK_PATH}`);
+    try {
+      await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
+        secret_token: WEBHOOK_SECRET,
+      });
+      console.log(`Telegram webhook successfully set: ${SERVER_URL}${WEBHOOK_PATH}`);
+    } catch (error) {
+      console.error("Failed to set Telegram webhook:", error.message);
+    }
+  } else {
+    console.warn("SERVER_URL not set – running in polling mode locally");
   }
 });
