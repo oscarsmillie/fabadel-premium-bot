@@ -1,4 +1,4 @@
-// index.js — FINAL VERSION FOR GOOGLE CLOUD RUN (ONLY SERVER FIX APPLIED)
+// index.js — FINAL VERSION FOR DIGITALOCEAN (POLLING ENABLED)
 
 import express from "express";
 import dotenv from "dotenv";
@@ -25,14 +25,15 @@ app.use((req, res, next) => {
   }
 });
 
-// Simple health check route (helps Cloud Run detect startup)
+// Simple health check route
 app.get("/", (req, res) => {
   res.send("🚀 Fabadel Premium Bot is alive and running!");
 });
 
 // ======================================================
 // TELEGRAM
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// --- CHANGE: USE POLLING ON DIGITALOCEAN ---
+const bot = new Telegraf(process.env.BOT_TOKEN, { polling: true });
 
 // SAFETY: log errors instead of silent failure
 bot.catch((err) => {
@@ -231,7 +232,7 @@ bot.action("check_status", async (ctx) => {
 });
 
 // ======================================================
-// INTASEND WEBHOOK (CHALLENGE VALIDATION + OPTIONAL SIGNATURE)
+// INTASEND WEBHOOK (unchanged)
 app.post(
   "/intasend-webhook",
   express.raw({ type: "application/json" }),
@@ -334,7 +335,7 @@ Welcome aboard – let's land your next big opportunity! 🚀`,
 );
 
 // ======================================================
-// INTASEND CALLBACK
+// INTASEND CALLBACK (unchanged)
 app.get("/intasend/callback", (req, res) => {
   res.send(`
     <h2>✅ Payment processed!</h2>
@@ -347,29 +348,12 @@ app.get("/intasend/callback", (req, res) => {
 });
 
 // ======================================================
-// TELEGRAM WEBHOOK
-const WEBHOOK_PATH = `/bot/${bot.secretPathComponent()}`;
-app.use(bot.webhookCallback(WEBHOOK_PATH, WEBHOOK_SECRET));
-
-// ======================================================
-// SERVER - ONLY CHANGE: FIXED FOR CLOUD RUN
-const PORT = process.env.PORT || 8080;
+// SERVER - DIGITALOCEAN FIX
+const PORT = process.env.PORT || 3000;
 
 const server = http.createServer(app);
 
-server.listen(PORT, "0.0.0.0", async () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ Server successfully listening on http://0.0.0.0:${PORT}`);
-
-  if (SERVER_URL) {
-    try {
-      await bot.telegram.setWebhook(`${SERVER_URL}${WEBHOOK_PATH}`, {
-        secret_token: WEBHOOK_SECRET,
-      });
-      console.log(`Telegram webhook successfully set: ${SERVER_URL}${WEBHOOK_PATH}`);
-    } catch (error) {
-      console.error("Failed to set Telegram webhook:", error.message);
-    }
-  } else {
-    console.warn("SERVER_URL not set – running in polling mode locally");
-  }
+  console.log("⚠️ Running Telegram bot in POLLING mode on DigitalOcean (no webhook required)");
 });
